@@ -1,4 +1,5 @@
 const db = require('../../config/db')
+const { calculateCapacity, calculateSupervisors } = require('../hall/hall.model')
 
 function normalizeIsoDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim()) ? String(value || '').trim() : ''
@@ -55,6 +56,24 @@ async function ensureExamScheduleAssignmentColumns(executor = db) {
   }
 
   return true
+}
+
+function getRequiredSupervisorsForHall(hallRow = {}) {
+  const examType = String(hallRow.exam_type || hallRow.examType || 'SEMESTER')
+    .trim()
+    .toUpperCase()
+
+  const block = String(hallRow.block_name || hallRow.block || hallRow.hall_code || '')
+    .trim()
+    .toUpperCase()
+    .slice(0, 2)
+
+  const seatRows = Number(hallRow.seat_rows || hallRow.rows || 0)
+  const seatCols = Number(hallRow.seat_cols || hallRow.cols || 0)
+  const studentsPerBench = Number(hallRow.students_per_bench || hallRow.studentsPerBench || 1)
+
+  const capacity = calculateCapacity(seatRows, seatCols, studentsPerBench, examType)
+  return calculateSupervisors(capacity, studentsPerBench, examType, block)
 }
 
 function mapFacultyRow(row) {
@@ -236,6 +255,14 @@ async function updateFacultyById(id, payload) {
         `,
         [payload.fullName, facultyId]
       )
+      await connection.query(
+        `
+          UPDATE exam_allocation_halls
+          SET faculty_name_two = ?
+          WHERE faculty_id_two = ?
+        `,
+        [payload.fullName, facultyId]
+      )
     }
 
     if (await ensureExamScheduleAssignmentColumns(connection)) {
@@ -244,6 +271,14 @@ async function updateFacultyById(id, payload) {
           UPDATE exam_schedules
           SET supervisor_name = ?
           WHERE supervisor_faculty_id = ?
+        `,
+        [payload.fullName, facultyId]
+      )
+      await connection.query(
+        `
+          UPDATE exam_schedules
+          SET supervisor_name_two = ?
+          WHERE supervisor_faculty_id_two = ?
         `,
         [payload.fullName, facultyId]
       )
@@ -273,17 +308,27 @@ async function updateFacultyById(id, payload) {
         throw err
       }
 
-      const [hallRows] = await connection.query(
-        `
-          SELECT id, hall_code, faculty_id
-          FROM exam_allocation_halls
-          WHERE allocation_id = ?
-            AND hall_code = ?
-          LIMIT 1
-          FOR UPDATE
-        `,
-        [allocationId, manualHallCode]
-      )
+    const [hallRows] = await connection.query(
+      `
+        SELECT 
+          eah.id,
+          eah.hall_code,
+          eah.faculty_id,
+          eah.faculty_id_two,
+          eah.seat_rows,
+          eah.seat_cols,
+          eah.students_per_bench,
+          h.block_name,
+          h.exam_type
+        FROM exam_allocation_halls eah
+        LEFT JOIN hall h ON h.id = eah.hall_id
+        WHERE eah.allocation_id = ?
+          AND eah.hall_code = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [allocationId, manualHallCode]
+    )
 
       const hallRow = hallRows[0]
       if (!hallRow) {
@@ -293,13 +338,23 @@ async function updateFacultyById(id, payload) {
       }
 
       const currentHallFacultyId = hallRow.faculty_id ? Number(hallRow.faculty_id) : null
-      if (currentHallFacultyId && currentHallFacultyId !== facultyId) {
-        const err = new Error(`Hall ${manualHallCode} is already assigned to another faculty`)
+      const currentHallFacultyIdTwo = hallRow.faculty_id_two ? Number(hallRow.faculty_id_two) : null
+      const requiredSupervisors = getRequiredSupervisorsForHall({
+        ...hallRow,
+        hall_code: hallRow.hall_code || manualHallCode
+      })
+
+      if (
+        currentHallFacultyId &&
+        currentHallFacultyId !== facultyId &&
+        (requiredSupervisors === 1 || (currentHallFacultyIdTwo && currentHallFacultyIdTwo !== facultyId))
+      ) {
+        const err = new Error(`Hall ${manualHallCode} is already fully assigned to other faculties`)
         err.status = 409
         throw err
       }
 
-      if (currentHallFacultyId !== facultyId) {
+      if (currentHallFacultyId !== facultyId && currentHallFacultyIdTwo !== facultyId) {
         if (nextAssignedWorkload >= Number(payload.maxWorkload)) {
           const err = new Error('Faculty workload limit reached. Cannot assign another hall.')
           err.status = 409
@@ -317,14 +372,25 @@ async function updateFacultyById(id, payload) {
           [nextAssignedWorkload, facultyId]
         )
 
-        await connection.query(
-          `
-            UPDATE exam_allocation_halls
-            SET faculty_id = ?, faculty_name = ?
-            WHERE id = ?
-          `,
-          [facultyId, payload.fullName, Number(hallRow.id)]
-        )
+        if (!currentHallFacultyId) {
+          await connection.query(
+            `
+              UPDATE exam_allocation_halls
+              SET faculty_id = ?, faculty_name = ?
+              WHERE id = ?
+            `,
+            [facultyId, payload.fullName, Number(hallRow.id)]
+          )
+        } else {
+          await connection.query(
+            `
+              UPDATE exam_allocation_halls
+              SET faculty_id_two = ?, faculty_name_two = ?
+              WHERE id = ?
+            `,
+            [facultyId, payload.fullName, Number(hallRow.id)]
+          )
+        }
       }
     }
 
@@ -504,7 +570,16 @@ async function clearAssignedWorkloadById(id) {
         `
           UPDATE exam_schedules
           SET supervisor_faculty_id = NULL, supervisor_name = NULL
-          WHERE supervisor_faculty_id = ?
+          WHERE supervisor_faculty_id = ? AND exam_date >= CURRENT_DATE()
+        `,
+        [Number(id)]
+      )
+      
+      await connection.query(
+        `
+          UPDATE exam_schedules
+          SET supervisor_faculty_id_two = NULL, supervisor_name_two = NULL
+          WHERE supervisor_faculty_id_two = ? AND exam_date >= CURRENT_DATE()
         `,
         [Number(id)]
       )
@@ -516,6 +591,15 @@ async function clearAssignedWorkloadById(id) {
           UPDATE exam_allocation_halls
           SET faculty_id = NULL, faculty_name = NULL
           WHERE faculty_id = ?
+        `,
+        [Number(id)]
+      )
+      
+      await connection.query(
+        `
+          UPDATE exam_allocation_halls
+          SET faculty_id_two = NULL, faculty_name_two = NULL
+          WHERE faculty_id_two = ?
         `,
         [Number(id)]
       )
@@ -603,22 +687,30 @@ async function autoAssignAllLatestAllocation() {
     const [hallRows] = await connection.query(
       `
         SELECT
-          h.id AS hall_allocation_id,
-          h.hall_code,
-          h.faculty_id,
-          h.faculty_name,
+          eah.id AS hall_allocation_id,
+          eah.hall_code,
+          eah.seat_rows,
+          eah.seat_cols,
+          eah.students_per_bench,
+          eah.faculty_id,
+          eah.faculty_name,
+          eah.faculty_id_two,
+          eah.faculty_name_two,
+          h.block_name,
+          h.exam_type,
           (
             SELECT r.dept_code
             FROM exam_allocation_rows r
-            WHERE r.hall_allocation_id = h.id
+            WHERE r.hall_allocation_id = eah.id
               AND r.dept_code IS NOT NULL
               AND r.dept_code <> '-'
             ORDER BY r.row_index ASC
             LIMIT 1
           ) AS preferred_dept
-        FROM exam_allocation_halls h
-        WHERE h.allocation_id = ?
-        ORDER BY h.id ASC
+        FROM exam_allocation_halls eah
+        LEFT JOIN hall h ON h.id = eah.hall_id
+        WHERE eah.allocation_id = ?
+        ORDER BY eah.id ASC
       `,
       [allocationId]
     )
@@ -634,7 +726,40 @@ async function autoAssignAllLatestAllocation() {
     let skippedCount = 0
 
     for (const hall of hallRows) {
-      if (hall.faculty_id) {
+      const requiredSupervisors = getRequiredSupervisorsForHall(hall)
+
+      if (!hall.faculty_id) {
+        let selected = await pickEligibleFaculty(connection, String(hall.preferred_dept || '').trim())
+        if (!selected) {
+          selected = await pickEligibleFaculty(connection, '')
+        }
+
+        if (selected) {
+          await connection.query(
+            `UPDATE faculty SET assigned_workload = assigned_workload + 1 WHERE faculty_id = ?`,
+            [selected.faculty_id]
+          )
+          await connection.query(
+            `UPDATE exam_allocation_halls SET faculty_id = ?, faculty_name = ? WHERE id = ?`,
+            [selected.faculty_id, selected.name, Number(hall.hall_allocation_id)]
+          )
+          assignedCount += 1
+          assignments.push({
+            hallCode: hall.hall_code,
+            facultyId: Number(selected.faculty_id),
+            facultyName: selected.name,
+            status: 'assigned'
+          })
+        } else {
+          skippedCount += 1
+          assignments.push({
+            hallCode: hall.hall_code,
+            facultyId: null,
+            facultyName: null,
+            status: 'no_eligible_faculty'
+          })
+        }
+      } else {
         skippedCount += 1
         assignments.push({
           hallCode: hall.hall_code,
@@ -642,50 +767,50 @@ async function autoAssignAllLatestAllocation() {
           facultyName: hall.faculty_name,
           status: 'already_assigned'
         })
-        continue
       }
 
-      let selected = await pickEligibleFaculty(connection, String(hall.preferred_dept || '').trim())
-      if (!selected) {
-        selected = await pickEligibleFaculty(connection, '')
+      if (requiredSupervisors > 1) {
+        if (!hall.faculty_id_two) {
+          let selectedTwo = await pickEligibleFaculty(connection, String(hall.preferred_dept || '').trim())
+          if (!selectedTwo) {
+            selectedTwo = await pickEligibleFaculty(connection, '')
+          }
+
+          if (selectedTwo) {
+            await connection.query(
+              `UPDATE faculty SET assigned_workload = assigned_workload + 1 WHERE faculty_id = ?`,
+              [selectedTwo.faculty_id]
+            )
+            await connection.query(
+              `UPDATE exam_allocation_halls SET faculty_id_two = ?, faculty_name_two = ? WHERE id = ?`,
+              [selectedTwo.faculty_id, selectedTwo.name, Number(hall.hall_allocation_id)]
+            )
+            assignedCount += 1
+            assignments.push({
+              hallCode: hall.hall_code,
+              facultyId: Number(selectedTwo.faculty_id),
+              facultyName: selectedTwo.name,
+              status: 'assigned'
+            })
+          } else {
+            skippedCount += 1
+            assignments.push({
+              hallCode: hall.hall_code,
+              facultyId: null,
+              facultyName: null,
+              status: 'no_eligible_faculty'
+            })
+          }
+        } else {
+          skippedCount += 1
+          assignments.push({
+            hallCode: hall.hall_code,
+            facultyId: Number(hall.faculty_id_two),
+            facultyName: hall.faculty_name_two,
+            status: 'already_assigned'
+          })
+        }
       }
-
-      if (!selected) {
-        skippedCount += 1
-        assignments.push({
-          hallCode: hall.hall_code,
-          facultyId: null,
-          facultyName: null,
-          status: 'no_eligible_faculty'
-        })
-        continue
-      }
-
-      await connection.query(
-        `
-          UPDATE faculty
-          SET assigned_workload = assigned_workload + 1
-          WHERE faculty_id = ?
-        `,
-        [selected.faculty_id]
-      )
-
-      await connection.query(
-        `
-          UPDATE exam_allocation_halls
-          SET faculty_id = ?, faculty_name = ?
-          WHERE id = ?
-        `,
-        [selected.faculty_id, selected.name, Number(hall.hall_allocation_id)]
-      )
-
-      assignedCount += 1
-      assignments.push({
-        hallCode: hall.hall_code,
-        facultyId: Number(selected.faculty_id),
-        facultyName: selected.name,
-        status: 'assigned'
-      })
     }
 
     await connection.commit()
@@ -760,11 +885,17 @@ async function listLatestAllocationAssignments() {
             h.hall_code,
             h.faculty_id,
             h.faculty_name,
+            h.faculty_id_two,
+            h.faculty_name_two,
             f.dept AS faculty_dept,
             f.assigned_workload,
-            f.max_workload
+            f.max_workload,
+            f2.dept AS faculty_dept_two,
+            f2.assigned_workload AS assigned_workload_two,
+            f2.max_workload AS max_workload_two
           FROM exam_allocation_halls h
           LEFT JOIN faculty f ON f.faculty_id = h.faculty_id
+          LEFT JOIN faculty f2 ON f2.faculty_id = h.faculty_id_two
           WHERE h.allocation_id = ?
           ORDER BY h.hall_code ASC
         `,
@@ -782,6 +913,76 @@ async function listLatestAllocationAssignments() {
               ? null
               : `${Number(row.assigned_workload)}/${Number(row.max_workload)}`
         })
+
+        if (row.faculty_id_two) {
+          assignments.push({
+            hallCode: row.hall_code,
+            facultyId: Number(row.faculty_id_two),
+            facultyName: row.faculty_name_two || null,
+            facultyDepartment: row.faculty_dept_two || null,
+            workloadText:
+              row.assigned_workload_two === null || row.max_workload_two === null
+                ? null
+                : `${Number(row.assigned_workload_two)}/${Number(row.max_workload_two)}`
+          })
+        }
+      }
+    }
+  }
+
+  return assignments
+}
+
+async function listHistoricalAssignments() {
+  const assignments = []
+
+  if (await hasAllocationTables()) {
+    const [allocationRows] = await db.query(
+      `
+        SELECT id
+        FROM exam_allocations
+        ORDER BY id DESC
+      `
+    )
+
+    if (allocationRows.length > 1) {
+      const historicalIds = allocationRows.slice(1).map(r => r.id)
+      const [rows] = await db.query(
+        `
+          SELECT
+            h.hall_code,
+            h.faculty_id,
+            h.faculty_name,
+            h.faculty_id_two,
+            h.faculty_name_two,
+            f.dept AS faculty_dept,
+            f2.dept AS faculty_dept_two
+          FROM exam_allocation_halls h
+          LEFT JOIN faculty f ON f.faculty_id = h.faculty_id
+          LEFT JOIN faculty f2 ON f2.faculty_id = h.faculty_id_two
+          WHERE h.allocation_id IN (?) AND (h.faculty_id IS NOT NULL OR h.faculty_id_two IS NOT NULL)
+          ORDER BY h.id DESC, h.hall_code ASC
+        `,
+        [historicalIds]
+      )
+
+      for (const row of rows) {
+        if (row.faculty_id) {
+          assignments.push({
+            hallCode: row.hall_code,
+            facultyId: Number(row.faculty_id),
+            facultyName: row.faculty_name || null,
+            facultyDepartment: row.faculty_dept || null
+          })
+        }
+        if (row.faculty_id_two) {
+          assignments.push({
+            hallCode: row.hall_code,
+            facultyId: Number(row.faculty_id_two),
+            facultyName: row.faculty_name_two || null,
+            facultyDepartment: row.faculty_dept_two || null
+          })
+        }
       }
     }
   }
@@ -820,9 +1021,9 @@ async function cancelAllAssignments() {
         const [hallResult] = await connection.query(
           `
             UPDATE exam_allocation_halls
-            SET faculty_id = NULL, faculty_name = NULL
+            SET faculty_id = NULL, faculty_name = NULL, faculty_id_two = NULL, faculty_name_two = NULL
             WHERE allocation_id = ?
-              AND (faculty_id IS NOT NULL OR faculty_name IS NOT NULL)
+              AND (faculty_id IS NOT NULL OR faculty_id_two IS NOT NULL)
           `,
           [allocationId]
         )
@@ -834,8 +1035,9 @@ async function cancelAllAssignments() {
       const [scheduleResult] = await connection.query(
         `
           UPDATE exam_schedules
-          SET supervisor_faculty_id = NULL, supervisor_name = NULL
-          WHERE supervisor_faculty_id IS NOT NULL OR supervisor_name IS NOT NULL
+          SET supervisor_faculty_id = NULL, supervisor_name = NULL, supervisor_faculty_id_two = NULL, supervisor_name_two = NULL
+          WHERE (supervisor_faculty_id IS NOT NULL OR supervisor_faculty_id_two IS NOT NULL)
+            AND exam_date >= CURRENT_DATE()
         `
       )
       schedulesCleared = Number(scheduleResult.affectedRows || 0)
@@ -866,5 +1068,6 @@ module.exports = {
   clearAssignedWorkloadById,
   autoAssignAllLatestAllocation,
   listLatestAllocationAssignments,
+  listHistoricalAssignments,
   cancelAllAssignments
 }

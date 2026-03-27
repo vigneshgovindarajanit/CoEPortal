@@ -16,7 +16,9 @@ async function listExamSchedules(req, res, next) {
 
 async function listExamScheduleFilters(req, res, next) {
   try {
-    const data = await examScheduleService.getExamScheduleFilters()
+    const data = await examScheduleService.getExamScheduleFilters({
+      examType: req.query.examType
+    })
     res.json(data)
   } catch (err) {
     next(err)
@@ -26,6 +28,24 @@ async function listExamScheduleFilters(req, res, next) {
 async function createExamSchedule(req, res, next) {
   try {
     const data = await examScheduleService.createExamSchedule(req.body)
+    res.status(201).json(data)
+  } catch (err) {
+    next(err)
+  }
+}
+
+async function previewGeneratedExamSchedules(req, res, next) {
+  try {
+    const data = await examScheduleService.previewGeneratedExamSchedules(req.body)
+    res.json(data)
+  } catch (err) {
+    next(err)
+  }
+}
+
+async function generateExamSchedules(req, res, next) {
+  try {
+    const data = await examScheduleService.generateExamSchedules(req.body)
     res.status(201).json(data)
   } catch (err) {
     next(err)
@@ -50,10 +70,22 @@ async function deleteExamSchedule(req, res, next) {
   }
 }
 
+async function deleteAllExamSchedules(req, res, next) {
+  try {
+    const data = await examScheduleService.removeAllExamSchedules()
+    res.status(200).json(data)
+  } catch (err) {
+    next(err)
+  }
+}
+
 module.exports = {
   listExamSchedules,
   listExamScheduleFilters,
   createExamSchedule,
+  previewGeneratedExamSchedules,
+  generateExamSchedules,
   updateExamSchedule,
-  deleteExamSchedule
+  deleteExamSchedule,
+  deleteAllExamSchedules
 }

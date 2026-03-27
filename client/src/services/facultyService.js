@@ -40,6 +40,11 @@ export async function fetchLatestFacultyAssignments() {
   return response.data
 }
 
+export async function fetchHistoricalFacultyAssignments() {
+  const response = await api.get('/faculty/assignments/historical')
+  return response.data
+}
+
 export async function cancelAllAssignedFaculty() {
   const response = await api.post('/faculty/cancel-all-assigned')
   return response.data

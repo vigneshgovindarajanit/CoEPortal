@@ -74,6 +74,10 @@ async function getLatestAssignments() {
   return facultyRepository.listLatestAllocationAssignments()
 }
 
+async function getHistoricalAssignments() {
+  return facultyRepository.listHistoricalAssignments()
+}
+
 async function cancelAssignment(id) {
   const existing = await facultyRepository.findById(id)
   if (!existing) {
@@ -101,6 +105,7 @@ module.exports = {
   autoAssignSupervisor,
   autoAssignAllSupervisors,
   getLatestAssignments,
+  getHistoricalAssignments,
   cancelAssignment,
   cancelAllAssigned,
   getWorkloadRules

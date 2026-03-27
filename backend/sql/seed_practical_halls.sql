@@ -1,5 +1,5 @@
 -- Practical halls seed data
--- Uses capacity 25 (5 rows x 5 cols x 1 student/bench), supervisors 1, exam type PRACTICAL.
+-- Existing labs below use capacity 25; Workshop Lab uses the current practical defaults.
 -- Run in MySQL against your application database.
 
 INSERT INTO hall (
@@ -38,7 +38,8 @@ VALUES
   ('AE', '1403', 'AIML LAB 3', 5, 5, 1, 'PRACTICAL', 25, 1, 1),
   ('AE', '1404', 'AIML LAB 4', 5, 5, 1, 'PRACTICAL', 25, 1, 1),
   ('AE', '1405', 'AIML LAB 5', 5, 5, 1, 'PRACTICAL', 25, 1, 1),
-  ('AE', '1406', 'AIML LAB 6', 5, 5, 1, 'PRACTICAL', 25, 1, 1)
+  ('AE', '1406', 'AIML LAB 6', 5, 5, 1, 'PRACTICAL', 25, 1, 1),
+  ('AE', '1501', 'WORKSHOP LAB', 6, 10, 1, 'PRACTICAL', 60, 1, 1)
 ON DUPLICATE KEY UPDATE
   block_name = VALUES(block_name),
   hall_number = VALUES(hall_number),

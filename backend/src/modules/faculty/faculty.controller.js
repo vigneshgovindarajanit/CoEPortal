@@ -75,6 +75,15 @@ async function listLatestAssignments(req, res, next) {
   }
 }
 
+async function listHistoricalAssignments(req, res, next) {
+  try {
+    const data = await facultyService.getHistoricalAssignments()
+    res.json(data)
+  } catch (err) {
+    next(err)
+  }
+}
+
 async function cancelAssignment(req, res, next) {
   try {
     const data = await facultyService.cancelAssignment(req.params.id)
@@ -102,6 +111,7 @@ module.exports = {
   autoAssignSupervisor,
   autoAssignAllSupervisors,
   listLatestAssignments,
+  listHistoricalAssignments,
   cancelAssignment,
   cancelAllAssigned
 }

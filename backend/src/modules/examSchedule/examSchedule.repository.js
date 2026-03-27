@@ -2,6 +2,35 @@ const db = require('../../config/db')
 
 let initPromise
 
+async function hasColumn(columnName) {
+  const [rows] = await db.query(
+    `
+      SELECT COUNT(*) AS total
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'exam_schedules'
+        AND COLUMN_NAME = ?
+    `,
+    [columnName]
+  )
+
+  return Number(rows[0]?.total || 0) > 0
+}
+
+async function renameLegacyColumn(oldName, newName, definition) {
+  const newColumnExists = await hasColumn(newName)
+  if (newColumnExists) {
+    return
+  }
+
+  const oldColumnExists = await hasColumn(oldName)
+  if (!oldColumnExists) {
+    return
+  }
+
+  await db.query(`ALTER TABLE exam_schedules CHANGE COLUMN ${oldName} ${newName} ${definition}`)
+}
+
 async function initSchema() {
   if (!initPromise) {
     initPromise = (async () => {
@@ -29,37 +58,45 @@ async function initSchema() {
         `
       )
 
-      const [facultyIdColumnRows] = await db.query(
-        `
-          SELECT COUNT(*) AS total
-          FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'exam_schedules'
-            AND COLUMN_NAME = 'supervisor_faculty_id'
-        `
+      // Repair older camelCase column layouts if this table existed before the
+      // current snake_case schema was introduced.
+      await renameLegacyColumn('examDate', 'exam_date', 'DATE NOT NULL')
+      await renameLegacyColumn('sessionName', 'session_name', 'VARCHAR(10) NOT NULL')
+      await renameLegacyColumn('examType', 'exam_type', 'VARCHAR(30) NOT NULL')
+      await renameLegacyColumn('courseCode', 'course_code', 'VARCHAR(40) NOT NULL')
+      await renameLegacyColumn('courseName', 'course_name', 'VARCHAR(255) NOT NULL')
+      await renameLegacyColumn('hallCode', 'hall_code', 'VARCHAR(50) NOT NULL')
+      await renameLegacyColumn('createdAt', 'created_at', 'TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP')
+      await renameLegacyColumn(
+        'updatedAt',
+        'updated_at',
+        'TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'
       )
 
-      if (!Number(facultyIdColumnRows[0]?.total || 0)) {
+      const supervisorFacultyIdExists = await hasColumn('supervisor_faculty_id')
+
+      if (!supervisorFacultyIdExists) {
         await db.query(
           'ALTER TABLE exam_schedules ADD COLUMN supervisor_faculty_id INT NULL AFTER hall_code'
         )
       }
 
-      const [supervisorNameColumnRows] = await db.query(
-        `
-          SELECT COUNT(*) AS total
-          FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'exam_schedules'
-            AND COLUMN_NAME = 'supervisor_name'
-        `
-      )
+      const supervisorNameExists = await hasColumn('supervisor_name')
 
-      if (!Number(supervisorNameColumnRows[0]?.total || 0)) {
+      if (!supervisorNameExists) {
         await db.query(
           'ALTER TABLE exam_schedules ADD COLUMN supervisor_name VARCHAR(255) NULL AFTER supervisor_faculty_id'
         )
       }
+
+      // Keep lab subjects categorized under practical schedules.
+      await db.query(
+        `
+          UPDATE exam_schedules
+          SET exam_type = 'PRACTICAL'
+          WHERE UPPER(TRIM(course_name)) REGEXP 'LAB[[:space:]]*$'
+        `
+      )
     })()
   }
 
@@ -144,7 +181,7 @@ async function getAll(filters = {}) {
         updated_at
       FROM exam_schedules
       ${whereSql}
-      ORDER BY exam_date DESC, session_name ASC, course_code ASC
+      ORDER BY exam_date ASC, session_name ASC, course_code ASC
     `,
     params
   )
@@ -152,19 +189,45 @@ async function getAll(filters = {}) {
   return rows.map(mapRow)
 }
 
-async function getFilters() {
+async function getFilters(filters = {}) {
   await initSchema()
+  const examType = String(filters.examType || '')
+    .trim()
+    .toUpperCase()
+  const where = []
+  const params = []
+
+  if (examType) {
+    where.push('exam_type = ?')
+    params.push(examType)
+  }
+
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+
   const [rows] = await db.query(
     `
       SELECT DISTINCT exam_type, department, session_name
       FROM exam_schedules
+      ${whereSql}
       ORDER BY exam_type ASC, department ASC, session_name ASC
+    `,
+    params
+  )
+
+  const [dateRows] = await db.query(
     `
+      SELECT DISTINCT exam_date
+      FROM exam_schedules
+      ${whereSql}
+      ORDER BY exam_date ASC
+    `,
+    params
   )
 
   const examTypes = []
   const departments = []
   const sessions = []
+  const dates = []
 
   for (const row of rows) {
     if (row.exam_type && !examTypes.includes(row.exam_type)) {
@@ -178,7 +241,13 @@ async function getFilters() {
     }
   }
 
-  return { examTypes, departments, sessions }
+  for (const row of dateRows) {
+    if (row.exam_date) {
+      dates.push(row.exam_date)
+    }
+  }
+
+  return { examTypes, departments, sessions, dates }
 }
 
 async function findById(id) {
@@ -309,6 +378,12 @@ async function deleteById(id) {
   return result.affectedRows > 0
 }
 
+async function deleteAll() {
+  await initSchema()
+  const [result] = await db.query('DELETE FROM exam_schedules')
+  return Number(result.affectedRows || 0)
+}
+
 module.exports = {
   getAll,
   getFilters,
@@ -316,5 +391,6 @@ module.exports = {
   findDuplicateSlot,
   create,
   updateById,
-  deleteById
+  deleteById,
+  deleteAll
 }

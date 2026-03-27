@@ -7,6 +7,7 @@ import MenuBookRoundedIcon from '@mui/icons-material/MenuBookRounded'
 import CodeRoundedIcon from '@mui/icons-material/CodeRounded'
 import EventNoteRoundedIcon from '@mui/icons-material/EventNoteRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
+import AssignmentTurnedInRoundedIcon from '@mui/icons-material/AssignmentTurnedInRounded'
 import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded'
 import { useAuth } from '../context/AuthContext'
 
@@ -17,8 +18,10 @@ const StudentsPage = lazy(() => import('../pages/students'))
 const SeatingPage = lazy(() => import('../pages/seating'))
 const ExamSchedulePage = lazy(() => import('../pages/examSchedule'))
 const CoursePage = lazy(() => import('../pages/course'))
+const CourseRegistrationPage = lazy(() => import('../pages/courseRegistration'))
 const LoginPage = lazy(() => import('../pages/login'))
 const LogoutPage = lazy(() => import('../pages/logout'))
+const ErrorPage = lazy(() => import('../pages/error'))
 
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: <DashboardRoundedIcon fontSize="small" /> },
@@ -26,6 +29,7 @@ const NAV_ITEMS = [
   { to: '/faculty', label: 'Faculty', icon: <BadgeRoundedIcon fontSize="small" /> },
   { to: '/students', label: 'Students', icon: <SchoolRoundedIcon fontSize="small" /> },
   { to: '/courses', label: 'Courses', icon: <MenuBookRoundedIcon fontSize="small" /> },
+  { to: '/course-registrations', label: 'Course Registration', icon: <AssignmentTurnedInRoundedIcon fontSize="small" /> },
   { to: '/seating', label: 'Seating', icon: <CodeRoundedIcon fontSize="small" /> },
   { to: '/exam-schedule', label: 'Exam Schedule', icon: <EventNoteRoundedIcon fontSize="small" /> },
   { to: '/logout', label: 'Logout', icon: <LogoutRoundedIcon fontSize="small" /> }
@@ -141,10 +145,12 @@ export default function AppRoutes() {
             <Route path="/faculty" element={<FacultyPage />} />
             <Route path="/students" element={<StudentsPage />} />
             <Route path="/courses" element={<CoursePage />} />
+            <Route path="/course-registrations" element={<CourseRegistrationPage />} />
             <Route path="/seating" element={<SeatingPage />} />
             <Route path="/exam-schedule" element={<ExamSchedulePage />} />
           </Route>
         </Route>
+        <Route path="*" element={<Suspense fallback={<div className="route-loading">Loading...</div>}><ErrorPage /></Suspense>} />
       </Routes>
     </BrowserRouter>
   )

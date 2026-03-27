@@ -2,6 +2,35 @@ const db = require('../../config/db')
 
 let initPromise
 
+async function hasColumn(tableName, columnName) {
+  const [rows] = await db.query(
+    `
+      SELECT COUNT(*) AS total
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND COLUMN_NAME = ?
+    `,
+    [tableName, columnName]
+  )
+
+  return Number(rows[0]?.total || 0) > 0
+}
+
+async function renameLegacyColumn(tableName, oldName, newName, definition) {
+  const newColumnExists = await hasColumn(tableName, newName)
+  if (newColumnExists) {
+    return
+  }
+
+  const oldColumnExists = await hasColumn(tableName, oldName)
+  if (!oldColumnExists) {
+    return
+  }
+
+  await db.query(`ALTER TABLE ${tableName} CHANGE COLUMN ${oldName} ${newName} ${definition}`)
+}
+
 async function initSchema() {
   if (!initPromise) {
     initPromise = (async () => {
@@ -12,11 +41,29 @@ async function initSchema() {
             year_filter VARCHAR(10) NOT NULL,
             primary_dept VARCHAR(20) NULL,
             secondary_dept VARCHAR(20) NULL,
+            exam_date VARCHAR(20) NULL,
+            session_name VARCHAR(20) NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (id)
           )
         `
       )
+
+      await renameLegacyColumn('exam_allocations', 'examDate', 'exam_date', 'VARCHAR(20) NULL')
+      await renameLegacyColumn('exam_allocations', 'sessionName', 'session_name', 'VARCHAR(20) NULL')
+      await renameLegacyColumn('exam_allocations', 'createdAt', 'created_at', 'TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP')
+
+      if (!(await hasColumn('exam_allocations', 'exam_date'))) {
+        await db.query(
+          'ALTER TABLE exam_allocations ADD COLUMN exam_date VARCHAR(20) NULL AFTER secondary_dept'
+        )
+      }
+
+      if (!(await hasColumn('exam_allocations', 'session_name'))) {
+        await db.query(
+          'ALTER TABLE exam_allocations ADD COLUMN session_name VARCHAR(20) NULL AFTER exam_date'
+        )
+      }
 
       await db.query(
         `
@@ -40,6 +87,18 @@ async function initSchema() {
           )
         `
       )
+
+      if (!(await hasColumn('exam_allocation_halls', 'faculty_id_two'))) {
+        await db.query(
+          'ALTER TABLE exam_allocation_halls ADD COLUMN faculty_id_two INT NULL AFTER faculty_name'
+        )
+      }
+
+      if (!(await hasColumn('exam_allocation_halls', 'faculty_name_two'))) {
+        await db.query(
+          'ALTER TABLE exam_allocation_halls ADD COLUMN faculty_name_two VARCHAR(150) NULL AFTER faculty_id_two'
+        )
+      }
 
       await db.query(
         `
@@ -84,35 +143,96 @@ function mapHallRow(row) {
           id: row.faculty_id,
           fullName: row.faculty_name
         }
+      : null,
+    facultyAssigneeTwo: row.faculty_id_two
+      ? {
+          id: row.faculty_id_two,
+          fullName: row.faculty_name_two
+        }
       : null
   }
+}
+
+const PRACTICAL_VENUE_RULES = [
+  { prefix: 'IT LAB', min: 1, max: 5 },
+  { prefix: 'CSE LAB', min: 1, max: 5 },
+  { prefix: 'ME LAB', min: 1, max: 6 },
+  { prefix: 'CT LAB', min: 1, max: 2 },
+  { prefix: 'AIML LAB', min: 1, max: 6 },
+  { exact: 'WORKSHOP LAB' }
+]
+
+function normalizeHallName(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim()
+}
+
+function isAllowedPracticalVenue(hallCode) {
+  const normalized = normalizeHallName(hallCode)
+  const compact = normalized.replace(/\s+/g, '')
+  return PRACTICAL_VENUE_RULES.some((rule) => {
+    if (rule.exact) {
+      return normalized === normalizeHallName(rule.exact)
+    }
+
+    const compactPrefix = rule.prefix.replace(/\s+/g, '')
+    const regex = new RegExp(`^${compactPrefix}([0-9]+)$`)
+    const match = compact.match(regex)
+    if (!match) {
+      return false
+    }
+    const number = Number(match[1])
+    return Number.isFinite(number) && number >= rule.min && number <= rule.max
+  })
+}
+
+function isPracticalOnlyHall(hall = {}) {
+  return (
+    isAllowedPracticalVenue(hall.hallCode)
+  )
 }
 
 async function listActiveHalls(examType) {
   await initSchema()
   const where = ['is_active = 1']
   const params = []
-  if (examType) {
-    where.push('exam_type = ?')
-    params.push(examType)
-  }
+
   const [rows] = await db.query(
     `
-      SELECT id, hall_code, seat_rows, seat_cols, students_per_bench
+      SELECT id, hall_code, seat_rows, seat_cols, students_per_bench, exam_type
       FROM hall
       WHERE ${where.join(' AND ')}
-      ORDER BY block_name ASC, hall_number ASC
+      ORDER BY 
+        CASE UPPER(block_name)
+          WHEN 'EW' THEN 1
+          WHEN 'WW' THEN 2
+          WHEN 'ME' THEN 3
+          WHEN 'SF' THEN 4
+          WHEN 'AE' THEN 5
+          ELSE 6
+        END ASC,
+        block_name ASC,
+        hall_number ASC
     `,
     params
   )
 
-  return rows.map((row) => ({
+  const allActiveHalls = rows.map((row) => ({
     id: row.id,
     hallCode: row.hall_code,
     rows: Number(row.seat_rows || 0),
     cols: Number(row.seat_cols || 0),
-    studentsPerBench: Number(row.students_per_bench || 1)
+    studentsPerBench: Number(row.students_per_bench || 1),
+    examType: row.exam_type || 'SEMESTER'
   }))
+
+  if (examType === 'PRACTICAL') {
+    return allActiveHalls.filter((hall) => isPracticalOnlyHall(hall))
+  }
+
+  return allActiveHalls.filter((hall) => !isPracticalOnlyHall(hall))
 }
 
 async function listStudentsByYear(yearFilter) {
@@ -292,7 +412,7 @@ async function findAllocationById(allocationId) {
 
   const [allocationRows] = await db.query(
     `
-      SELECT id, year_filter, primary_dept, secondary_dept, created_at
+      SELECT id, year_filter, primary_dept, secondary_dept, exam_date, session_name, created_at
       FROM exam_allocations
       WHERE id = ?
       LIMIT 1
@@ -316,7 +436,9 @@ async function findAllocationById(allocationId) {
         students_per_bench,
         assigned_count,
         faculty_id,
-        faculty_name
+        faculty_name,
+        faculty_id_two,
+        faculty_name_two
       FROM exam_allocation_halls
       WHERE allocation_id = ?
       ORDER BY id ASC
@@ -371,6 +493,8 @@ async function findAllocationById(allocationId) {
     yearFilter: allocation.year_filter,
     primaryDept: allocation.primary_dept || '',
     secondaryDept: allocation.secondary_dept || '',
+    examDate: allocation.exam_date || null,
+    sessionName: allocation.session_name || '',
     createdAt: allocation.created_at,
     hallLayouts: hallRows.map((hallRow) => {
       const mapped = mapHallRow(hallRow)
@@ -385,7 +509,8 @@ async function findAllocationById(allocationId) {
         },
         rows: rowsByHall.get(Number(hallRow.id)) || [],
         assignedCount: mapped.assignedCount,
-        facultyAssignee: mapped.facultyAssignee
+        facultyAssignee: mapped.facultyAssignee,
+        facultyAssigneeTwo: mapped.facultyAssigneeTwo
       }
     })
   }

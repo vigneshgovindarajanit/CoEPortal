@@ -6,6 +6,10 @@ import {
   Card,
   CardContent,
   Checkbox,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   InputLabel,
   ListItemText,
@@ -23,8 +27,49 @@ import {
   fetchLatestAllocation,
   generateAllocation
 } from '../services/allocationService'
-import { fetchExamSchedules } from '../services/examScheduleService'
+import { fetchExamScheduleFilters, fetchExamSchedules } from '../services/examScheduleService'
 import { fetchStudentsSummary } from '../services/studentService'
+
+const PRACTICAL_VENUE_RULES = [
+  { prefix: 'IT LAB', min: 1, max: 5 },
+  { prefix: 'CSE LAB', min: 1, max: 5 },
+  { prefix: 'ME LAB', min: 1, max: 6 },
+  { prefix: 'CT LAB', min: 1, max: 2 },
+  { prefix: 'AIML LAB', min: 1, max: 6 },
+  { exact: 'WORKSHOP LAB' }
+]
+
+function normalizeHallName(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim()
+}
+
+function isAllowedPracticalVenue(hallCode) {
+  const normalized = normalizeHallName(hallCode)
+  const compact = normalized.replace(/\s+/g, '')
+  return PRACTICAL_VENUE_RULES.some((rule) => {
+    if (rule.exact) {
+      return normalized === normalizeHallName(rule.exact)
+    }
+
+    const compactPrefix = rule.prefix.replace(/\s+/g, '')
+    const regex = new RegExp(`^${compactPrefix}([0-9]+)$`)
+    const match = compact.match(regex)
+    if (!match) {
+      return false
+    }
+    const number = Number(match[1])
+    return Number.isFinite(number) && number >= rule.min && number <= rule.max
+  })
+}
+
+function isPracticalOnlyHall(hall) {
+  return (
+    isAllowedPracticalVenue(hall?.hallCode)
+  )
+}
 
 const YEAR_OPTIONS = ['ALL', '1', '2', '3', '4']
 const EXAM_TYPE_OPTIONS = [
@@ -35,23 +80,31 @@ const EXAM_TYPE_OPTIONS = [
 
 const PRINT_LOGO_URL = 'https://www.facultyplus.com/wp-content/uploads/2025/06/bannari-logo.png'
 
+function normalizeDateValue(value) {
+  return String(value || '').split('T')[0].trim()
+}
+
 function formatPrintDate(value) {
-  if (!value) {
+  const normalizedValue = normalizeDateValue(value)
+
+  if (!normalizedValue) {
     return '-'
   }
 
-  const date = new Date(`${value}T00:00:00`)
+  const date = new Date(`${normalizedValue}T00:00:00`)
   return Number.isNaN(date.getTime())
-    ? String(value)
-    : date.toLocaleDateString('en-GB').replace(/\//g, '.')
+    ? normalizedValue
+    : date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })
 }
 
 function formatPrintMonthYear(value) {
-  if (!value) {
+  const normalizedValue = normalizeDateValue(value)
+
+  if (!normalizedValue) {
     return ''
   }
 
-  const date = new Date(`${value}T00:00:00`)
+  const date = new Date(`${normalizedValue}T00:00:00`)
   return Number.isNaN(date.getTime())
     ? ''
     : date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }).toUpperCase()
@@ -133,10 +186,27 @@ function getFacultyName(faculty) {
 }
 
 function getLayoutDepartments(layout) {
+  const deptCounts = {}
+  
   const rows = Array.isArray(layout?.rows) ? layout.rows : []
-  return rows
-    .map((row) => String(row?.dept || '').trim().toUpperCase())
-    .filter((dept, index, list) => dept && list.indexOf(dept) === index)
+  for (const row of rows) {
+    const rollNumbers = Array.isArray(row.rollNumbers) ? row.rollNumbers : []
+    for (const rollNo of rollNumbers) {
+      if (rollNo && rollNo !== '-') {
+        // Strip everything except letters to get the pure department acronym
+        const dept = String(rollNo).replace(/[^A-Za-z]/g, '').trim().toUpperCase()
+        if (dept) {
+          deptCounts[dept] = (deptCounts[dept] || 0) + 1
+        }
+      }
+    }
+  }
+
+  const result = []
+  for (const dept of Object.keys(deptCounts).sort()) {
+    result.push({ dept, count: deptCounts[dept] })
+  }
+  return result
 }
 
 export default function SeatingPage() {
@@ -144,8 +214,18 @@ export default function SeatingPage() {
   const [studentSummary, setStudentSummary] = useState({ total: 0, byYear: {} })
   const [allocation, setAllocation] = useState(null)
   const [examSchedules, setExamSchedules] = useState([])
+  const [scheduleFilters, setScheduleFilters] = useState({ dates: [], sessions: [] })
   const [selectedYears, setSelectedYears] = useState(['3'])
   const [selectedExamType, setSelectedExamType] = useState('SEMESTER')
+  const [selectedDateFilter, setSelectedDateFilter] = useState('')
+  const [selectedSessionFilter, setSelectedSessionFilter] = useState('')
+  const [generateDialogOpen, setGenerateDialogOpen] = useState(false)
+  const [generateForm, setGenerateForm] = useState({
+    years: ['3'],
+    department: '',
+    examDate: '',
+    sessionName: ''
+  })
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
@@ -156,11 +236,12 @@ export default function SeatingPage() {
     setLoading(true)
     setError('')
     try {
-      const [hallsRes, studentsSummaryRes, latestAllocationRes, examSchedulesRes] = await Promise.allSettled([
+      const [hallsRes, studentsSummaryRes, latestAllocationRes, examSchedulesRes, examScheduleFiltersRes] = await Promise.allSettled([
         api.get('/halls'),
         fetchStudentsSummary(),
         fetchLatestAllocation(),
-        fetchExamSchedules({ examType: selectedExamType })
+        fetchExamSchedules({ examType: selectedExamType }),
+        fetchExamScheduleFilters({ examType: selectedExamType })
       ])
 
       if (hallsRes.status !== 'fulfilled') {
@@ -192,12 +273,34 @@ export default function SeatingPage() {
       } else {
         setExamSchedules([])
       }
+
+      if (examScheduleFiltersRes.status === 'fulfilled') {
+        setScheduleFilters({
+          dates: (examScheduleFiltersRes.value?.dates || []).map(normalizeDateValue),
+          sessions: examScheduleFiltersRes.value?.sessions || [],
+          departments: examScheduleFiltersRes.value?.departments || []
+        })
+      } else {
+        setScheduleFilters({ dates: [], sessions: [], departments: [] })
+      }
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to load seating data'))
     } finally {
       setLoading(false)
     }
   }, [selectedExamType])
+
+  useEffect(() => {
+    if (selectedDateFilter && !scheduleFilters.dates.includes(selectedDateFilter)) {
+      setSelectedDateFilter('')
+    }
+  }, [scheduleFilters.dates, selectedDateFilter])
+
+  useEffect(() => {
+    if (selectedSessionFilter && !scheduleFilters.sessions.includes(selectedSessionFilter)) {
+      setSelectedSessionFilter('')
+    }
+  }, [scheduleFilters.sessions, selectedSessionFilter])
 
   useEffect(() => {
     loadData()
@@ -229,8 +332,18 @@ export default function SeatingPage() {
   }, [allocation, layoutSearch])
 
   const filteredHallsByExamType = useMemo(() => {
-    return halls.filter((hall) => hall.examType === selectedExamType)
+    if (selectedExamType === 'PRACTICAL') {
+      return halls.filter((hall) => isPracticalOnlyHall(hall))
+    }
+    return halls.filter((hall) => !isPracticalOnlyHall(hall))
   }, [halls, selectedExamType])
+
+
+
+  const availableDates = useMemo(() => scheduleFilters.dates || [], [scheduleFilters.dates])
+
+  const availableSessions = useMemo(() => scheduleFilters.sessions || [], [scheduleFilters.sessions])
+  const availableDepartments = useMemo(() => scheduleFilters.departments || [], [scheduleFilters.departments])
 
   const printContext = useMemo(() => {
     const visibleHallCodes = new Set(
@@ -240,13 +353,16 @@ export default function SeatingPage() {
       const hallCode = String(item?.hallCode || '').trim()
       const matchesYear =
         selectedYears.includes('ALL') || selectedYears.includes(String(item?.year || ''))
+      
+      const matchesDate = !selectedDateFilter || normalizeDateValue(item.examDate) === selectedDateFilter
+      const matchesSession = !selectedSessionFilter || item.sessionName === selectedSessionFilter
 
-      return visibleHallCodes.has(hallCode) && matchesYear
+      return visibleHallCodes.has(hallCode) && matchesYear && matchesDate && matchesSession
     })
 
     const referenceSchedule = matchedSchedules[0] || examSchedules[0] || null
-    const examDate = referenceSchedule?.examDate || null
-    const sessionName = String(referenceSchedule?.sessionName || '').trim().toUpperCase() || '-'
+    const examDate = selectedDateFilter || normalizeDateValue(referenceSchedule?.examDate) || null
+    const sessionName = selectedSessionFilter || String(referenceSchedule?.sessionName || '').trim().toUpperCase() || '-'
     const titleSuffix = formatPrintMonthYear(examDate)
 
     return {
@@ -257,7 +373,7 @@ export default function SeatingPage() {
       timeLabel: getSessionTimeLabel(sessionName),
       hasReferenceSchedule: Boolean(referenceSchedule)
     }
-  }, [examSchedules, filteredLayouts, selectedExamType, selectedYears])
+  }, [examSchedules, filteredLayouts, selectedExamType, selectedYears, selectedDateFilter, selectedSessionFilter])
 
   const seatingStats = useMemo(
     () => [
@@ -291,17 +407,61 @@ export default function SeatingPage() {
 
   const hasFilteredLayouts = filteredLayouts.length > 0
 
+  async function openGenerateDialog() {
+    setError('')
+
+    try {
+      const latestFilters = await fetchExamScheduleFilters({ examType: selectedExamType })
+      setScheduleFilters({
+        dates: (latestFilters?.dates || []).map(normalizeDateValue),
+        sessions: latestFilters?.sessions || [],
+        departments: latestFilters?.departments || []
+      })
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to load department, date, and session filters'))
+    }
+
+    setGenerateForm({
+      years: selectedYears,
+      department: '',
+      examDate: selectedDateFilter || '',
+      sessionName: selectedSessionFilter || ''
+    })
+    setGenerateDialogOpen(true)
+  }
+
+  function closeGenerateDialog() {
+    setGenerateDialogOpen(false)
+  }
+
   async function generateSeatingLayout() {
     setGenerating(true)
     setError('')
     setSuccess('')
 
     try {
+      setSelectedYears(generateForm.years)
+      setSelectedDateFilter(generateForm.examDate)
+      setSelectedSessionFilter(generateForm.sessionName)
+
       const data = await generateAllocation({
-        years: selectedYears.includes('ALL') ? ['ALL'] : selectedYears.map((value) => Number(value)),
+        years: generateForm.years.includes('ALL') ? ['ALL'] : generateForm.years.map((value) => Number(value)),
+        primaryDept: generateForm.department || undefined,
         examType: selectedExamType
       })
       setAllocation(data)
+
+      // Save filter context to DB
+      const examDateValue = generateForm.examDate || null
+      const sessionValue = generateForm.sessionName || null
+      await api.post('/seating-filters', {
+        yearFilter: generateForm.years.includes('ALL') ? 'ALL' : generateForm.years.join(','),
+        examType: selectedExamType,
+        examDate: examDateValue,
+        sessionName: sessionValue
+      })
+
+      setGenerateDialogOpen(false)
       setSuccess('Seating generated and saved to database.')
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to generate seating'))
@@ -328,7 +488,7 @@ export default function SeatingPage() {
           <Button variant="outlined" onClick={exportSeatingLayoutPdf} disabled={!hasFilteredLayouts}>
             Export PDF
           </Button>
-          <Button variant="contained" onClick={generateSeatingLayout} disabled={generating || loading}>
+          <Button variant="contained" onClick={openGenerateDialog} disabled={generating || loading}>
             {generating ? 'Generating...' : 'Generate Layout'}
           </Button>
         </Stack>
@@ -459,6 +619,38 @@ export default function SeatingPage() {
                   </MenuItem>
                 </Select>
               </FormControl>
+
+              <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 170 } }}>
+                <InputLabel id="date-filter-label">Exam Date</InputLabel>
+                <Select
+                  labelId="date-filter-label"
+                  value={selectedDateFilter}
+                  label="Exam Date"
+                  onChange={(event) => setSelectedDateFilter(String(event.target.value || ''))}
+                >
+                  <MenuItem value=""><em>Any Date</em></MenuItem>
+                  {availableDates.map((date) => (
+                    <MenuItem key={date} value={date}>
+                      {formatPrintDate(date)}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              
+              <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 140 } }}>
+                <InputLabel id="session-filter-label">Session</InputLabel>
+                <Select
+                  labelId="session-filter-label"
+                  value={selectedSessionFilter}
+                  label="Session"
+                  onChange={(event) => setSelectedSessionFilter(event.target.value)}
+                >
+                  <MenuItem value=""><em>Any Session</em></MenuItem>
+                  {availableSessions.map((session) => (
+                    <MenuItem key={session} value={session}>{session}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
             </Stack>
           </Stack>
         </CardContent>
@@ -485,7 +677,9 @@ export default function SeatingPage() {
 
             {filteredLayouts.map((layout) => {
               const assignedCount = Number(layout.assignedCount || 0)
-              const isPeriodicTestLayout = selectedExamType === 'PERIODIC_TEST'
+              const hallCodePrefix = String(layout.hall?.hallCode || '').toUpperCase().substring(0, 2)
+              const isScrollableLayout = selectedExamType === 'PERIODIC_TEST' || hallCodePrefix === 'ME' || hallCodePrefix === 'SF'
+              
               return (
                 <Box key={`${layout.hall.id}-${layout.hallAllocationId || 'new'}`} className="seating-layout-card">
                   <Box className="seating-layout-head">
@@ -494,12 +688,26 @@ export default function SeatingPage() {
                         {layout.hall.hallCode}
                       </Typography>
                       <Box className="seating-layout-depts">
-                        {getLayoutDepartments(layout).map((dept) => (
-                          <Box key={`${layout.hall.id}-${dept}`} className="seating-layout-dept-chip">
-                            {dept}
+                        {getLayoutDepartments(layout).map((item) => (
+                          <Box key={`${layout.hall.id}-${item.dept}`} className="seating-layout-dept-chip">
+                            {item.dept} {item.count}
                           </Box>
                         ))}
                       </Box>
+                      {(layout.facultyAssignee || layout.facultyAssigneeTwo) && (
+                        <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                          {layout.facultyAssignee && (
+                            <Box className="seating-layout-dept-chip" sx={{ background: 'rgba(33, 150, 243, 0.1)', color: '#1976d2', border: '1px solid rgba(25, 118, 210, 0.3)' }}>
+                              Supervisor: {layout.facultyAssignee.fullName}
+                            </Box>
+                          )}
+                          {layout.facultyAssigneeTwo && (
+                            <Box className="seating-layout-dept-chip" sx={{ background: 'rgba(33, 150, 243, 0.1)', color: '#1976d2', border: '1px solid rgba(25, 118, 210, 0.3)' }}>
+                              Supervisor 2: {layout.facultyAssigneeTwo.fullName}
+                            </Box>
+                          )}
+                        </Box>
+                      )}
                     </Box>
                     <Box className="seating-layout-total">
                       <Typography className="seating-layout-total-label">TOTAL STUDENTS</Typography>
@@ -507,7 +715,7 @@ export default function SeatingPage() {
                     </Box>
                   </Box>
 
-                  <Box className="seating-layout-body">
+                  <Box className={`seating-layout-body${isScrollableLayout ? ' seating-layout-body-scrollable' : ''}`}>
                     {(layout.rows || []).map((row) => {
                       const rowSeats = Array.isArray(row.rollNumbers) ? row.rollNumbers : []
                       const columnCount = Math.max(Number(layout.hall?.cols || 0), rowSeats.length)
@@ -519,16 +727,21 @@ export default function SeatingPage() {
                       return (
                         <Box
                           key={`${layout.hall.id}-${row.rowLabel}`}
-                          className={`seating-layout-row${isPeriodicTestLayout ? ' seating-layout-row-periodic' : ''}`}
+                          className={`seating-layout-row${isScrollableLayout ? ' seating-layout-row-periodic' : ''}`}
                         >
-                          <Box className="seating-layout-row-label">{row.rowLabel}</Box>
+                          <Box className="seating-layout-row-label">
+                            <Box>{row.rowLabel}</Box>
+                            <Box sx={{ fontSize: '0.65rem', lineHeight: 1, mt: 0.5, opacity: 0.8, fontWeight: 'bold' }}>
+                              {row.dept}
+                            </Box>
+                          </Box>
                           <Box
-                            className={`seating-layout-row-grid${isPeriodicTestLayout ? ' seating-layout-row-grid-periodic' : ''}`}
+                            className={`seating-layout-row-grid${isScrollableLayout ? ' seating-layout-row-grid-periodic' : ''}`}
                           >
                             {cols.map((seat) => (
                               <Box
                                 key={`${layout.hall.id}-${row.rowLabel}-${seat.seatCode}`}
-                                className={`seating-layout-seat${isPeriodicTestLayout ? ' seating-layout-seat-periodic' : ''}`}
+                                className={`seating-layout-seat${isScrollableLayout ? ' seating-layout-seat-periodic' : ''}`}
                               >
                                 <Typography className="seating-layout-seat-code">{seat.seatCode}</Typography>
                                 <Typography className="seating-layout-seat-roll">{seat.rollNo}</Typography>
@@ -557,6 +770,140 @@ export default function SeatingPage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={generateDialogOpen} onClose={closeGenerateDialog} fullWidth maxWidth="sm">
+        <DialogTitle>Generate Layout</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <FormControl fullWidth size="small">
+              <InputLabel id="generate-years-label">Year</InputLabel>
+              <Select
+                labelId="generate-years-label"
+                multiple
+                value={generateForm.years}
+                label="Year"
+                onChange={(event) => {
+                  const raw = event.target.value
+                  const values = (Array.isArray(raw) ? raw : [raw]).map((value) => String(value))
+
+                  const normalized = values.includes('ALL')
+                    ? ['ALL']
+                    : values
+                        .filter((value, index, arr) => arr.indexOf(value) === index)
+                        .filter((value) => YEAR_OPTIONS.includes(value) && value !== 'ALL')
+
+                  setGenerateForm((prev) => ({
+                    ...prev,
+                    years: normalized.length > 0 ? normalized : ['ALL']
+                  }))
+                }}
+                renderValue={(selected) => {
+                  const selectedValues = Array.isArray(selected) ? selected : [selected]
+                  if (selectedValues.includes('ALL')) {
+                    return 'All Years'
+                  }
+                  return selectedValues.map((value) => getAcademicYearLabel(value)).join(', ')
+                }}
+              >
+                <MenuItem value="ALL">
+                  <Checkbox checked={generateForm.years.includes('ALL')} />
+                  <ListItemText primary="All Years" />
+                </MenuItem>
+                <MenuItem value="1">
+                  <Checkbox checked={generateForm.years.includes('1')} />
+                  <ListItemText primary={getAcademicYearLabel('1')} />
+                </MenuItem>
+                <MenuItem value="2">
+                  <Checkbox checked={generateForm.years.includes('2')} />
+                  <ListItemText primary={getAcademicYearLabel('2')} />
+                </MenuItem>
+                <MenuItem value="3">
+                  <Checkbox checked={generateForm.years.includes('3')} />
+                  <ListItemText primary={getAcademicYearLabel('3')} />
+                </MenuItem>
+                <MenuItem value="4">
+                  <Checkbox checked={generateForm.years.includes('4')} />
+                  <ListItemText primary={getAcademicYearLabel('4')} />
+                </MenuItem>
+              </Select>
+            </FormControl>
+
+            <FormControl fullWidth size="small">
+              <InputLabel id="generate-dept-label">Department</InputLabel>
+              <Select
+                labelId="generate-dept-label"
+                value={generateForm.department}
+                label="Department"
+                onChange={(event) =>
+                  setGenerateForm((prev) => ({
+                    ...prev,
+                    department: String(event.target.value || '')
+                  }))
+                }
+              >
+                <MenuItem value=""><em>All Departments</em></MenuItem>
+                {availableDepartments.map((department) => (
+                  <MenuItem key={department} value={department}>
+                    {department}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <FormControl fullWidth size="small">
+              <InputLabel id="generate-date-label">Exam Date</InputLabel>
+              <Select
+                labelId="generate-date-label"
+                value={generateForm.examDate}
+                label="Exam Date"
+                onChange={(event) =>
+                  setGenerateForm((prev) => ({
+                    ...prev,
+                    examDate: String(event.target.value || '')
+                  }))
+                }
+              >
+                <MenuItem value=""><em>All Dates</em></MenuItem>
+                {availableDates.map((date) => (
+                  <MenuItem key={date} value={date}>
+                    {formatPrintDate(date)}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <FormControl fullWidth size="small">
+              <InputLabel id="generate-session-label">Session</InputLabel>
+              <Select
+                labelId="generate-session-label"
+                value={generateForm.sessionName}
+                label="Session"
+                onChange={(event) =>
+                  setGenerateForm((prev) => ({
+                    ...prev,
+                    sessionName: String(event.target.value || '')
+                  }))
+                }
+              >
+                <MenuItem value=""><em>All Sessions</em></MenuItem>
+                {availableSessions.map((session) => (
+                  <MenuItem key={session} value={session}>
+                    {session}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeGenerateDialog} variant="contained" color="error">
+            Cancel
+          </Button>
+          <Button onClick={generateSeatingLayout} variant="contained" disabled={generating}>
+            {generating ? 'Generating...' : 'Generate'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   )
 }

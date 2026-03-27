@@ -31,6 +31,7 @@ import {
   createFaculty,
   fetchFaculty,
   fetchLatestFacultyAssignments,
+  fetchHistoricalFacultyAssignments,
   fetchHalls,
   fetchPracticalHalls,
   updateFaculty
@@ -61,6 +62,16 @@ function getErrorMessage(err, fallback) {
   return err?.response?.data?.error || err?.message || fallback
 }
 
+function formatAssignmentDate(value) {
+  const raw = String(value || '').split('T')[0]
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return '-'
+  }
+
+  const [year, month, day] = raw.split('-')
+  return `${Number(day)}/${Number(month)}/${year}`
+}
+
 export default function FacultyPage() {
   const [faculty, setFaculty] = useState([])
   const [halls, setHalls] = useState([])
@@ -73,6 +84,7 @@ export default function FacultyPage() {
   const [cancellingAll, setCancellingAll] = useState(false)
   const [cancellingId, setCancellingId] = useState(null)
   const [latestAssignments, setLatestAssignments] = useState([])
+  const [historicalAssignments, setHistoricalAssignments] = useState([])
   const [practicalVenues, setPracticalVenues] = useState([])
   const [allocationHallOptions, setAllocationHallOptions] = useState([])
   const [error, setError] = useState('')
@@ -107,16 +119,85 @@ export default function FacultyPage() {
   const hallsByFacultyId = useMemo(() => {
     const map = new Map()
     for (const item of latestAssignments) {
+      if (!item.hallCode) {
+        continue
+      }
+      
+      let targetId = item.facultyId
+      if (!targetId && item.facultyName) {
+        const found = faculty.find(f => String(f.fullName).trim() === String(item.facultyName).trim())
+        if (found) {
+          targetId = found.id
+        }
+      }
+
+      if (targetId) {
+        if (!map.has(targetId)) {
+          map.set(targetId, new Set())
+        }
+        map.get(targetId).add(item.hallCode)
+      }
+    }
+
+    const result = new Map()
+    for (const [key, set] of map.entries()) {
+      result.set(key, Array.from(set))
+    }
+    return result
+  }, [latestAssignments, faculty])
+
+  const latestScheduleByFacultyId = useMemo(() => {
+    const map = new Map()
+
+    for (const item of latestAssignments) {
+      let targetId = item.facultyId
+
+      if (!targetId && item.facultyName) {
+        const found = faculty.find((member) => String(member.fullName).trim() === String(item.facultyName).trim())
+        if (found) {
+          targetId = found.id
+        }
+      }
+
+      if (!targetId) {
+        continue
+      }
+
+      const nextEntry = {
+        hallCode: item.hallCode || '-',
+        examDate: item.examDate || '',
+        sessionName: item.sessionName || ''
+      }
+
+      if (!map.has(targetId)) {
+        map.set(targetId, [])
+      }
+
+      map.get(targetId).push(nextEntry)
+    }
+
+    return map
+  }, [latestAssignments, faculty])
+
+  const historicalHallsByFacultyId = useMemo(() => {
+    const map = new Map()
+    for (const item of historicalAssignments) {
       if (!item.facultyId || !item.hallCode) {
         continue
       }
       if (!map.has(item.facultyId)) {
-        map.set(item.facultyId, [])
+        map.set(item.facultyId, new Set())
       }
-      map.get(item.facultyId).push(item.hallCode)
+      map.get(item.facultyId).add(item.hallCode)
     }
-    return map
-  }, [latestAssignments])
+    
+    // convert Set back to Array to render easily
+    const result = new Map()
+    for (const [key, set] of map.entries()) {
+      result.set(key, Array.from(set).slice(0, 3))
+    }
+    return result
+  }, [historicalAssignments])
 
   const filteredFaculty = useMemo(() => {
     const normalizedSearch = String(search || '').trim().toLowerCase()
@@ -150,18 +231,33 @@ export default function FacultyPage() {
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
+
     try {
-      const [facultyData, assignmentsData, practicalHallsData, hallsData, scheduleFilters, latestAllocation] = await Promise.all([
+      const results = await Promise.allSettled([
         fetchFaculty(),
         fetchLatestFacultyAssignments(),
+        fetchHistoricalFacultyAssignments(),
         fetchPracticalHalls(),
         fetchHalls(),
         fetchExamScheduleFilters(),
         fetchLatestAllocation()
       ])
-      setFaculty(facultyData || [])
-      setLatestAssignments(assignmentsData || [])
-      setHalls(hallsData || [])
+
+      const getValue = (index, fallback) =>
+        results[index].status === 'fulfilled' ? results[index].value || fallback : fallback
+
+      const facultyData = getValue(0, [])
+      const assignmentsData = getValue(1, [])
+      const historicalData = getValue(2, [])
+      const practicalHallsData = getValue(3, [])
+      const hallsData = getValue(4, [])
+      const scheduleFilters = getValue(5, null)
+      const latestAllocation = getValue(6, null)
+
+      setFaculty(facultyData)
+      setLatestAssignments(assignmentsData)
+      setHistoricalAssignments(historicalData)
+      setHalls(hallsData)
       setAllocationHallOptions(
         (latestAllocation?.hallLayouts || [])
           .map((hall) => String(hall.hallCode || '').trim())
@@ -173,25 +269,13 @@ export default function FacultyPage() {
         (practicalHallsData || [])
           .sort((a, b) => String(a.hallCode || '').localeCompare(String(b.hallCode || '')))
       )
-    } catch {
-      try {
-        const [facultyData, practicalHallsData, hallsData] = await Promise.all([
-          fetchFaculty(),
-          fetchPracticalHalls(),
-          fetchHalls()
-        ])
-        setFaculty(facultyData || [])
-        setLatestAssignments([])
-        setHalls(hallsData || [])
-        setAllocationHallOptions([])
-        setSessions(['FN', 'AN'])
-        setPracticalVenues(
-          (practicalHallsData || [])
-            .sort((a, b) => String(a.hallCode || '').localeCompare(String(b.hallCode || '')))
-        )
-      } catch (innerErr) {
-        setError(getErrorMessage(innerErr, 'Failed to load faculty data'))
+
+      const failed = results.find((result) => result.status === 'rejected')
+      if (failed) {
+        setError(getErrorMessage(failed.reason, 'Some data could not be loaded. Showing available information.'))
       }
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to load faculty data'))
     } finally {
       setLoading(false)
     }
@@ -490,6 +574,7 @@ export default function FacultyPage() {
             ? Math.min((item.currentWorkload / item.maxWorkload) * 100, 100)
             : 0
           const assignedHalls = hallsByFacultyId.get(item.id) || []
+          const assignedSchedules = latestScheduleByFacultyId.get(item.id) || []
           return (
             <Card className="hall-card faculty-card" key={item.id}>
               <CardContent className="faculty-card-content">
@@ -502,11 +587,25 @@ export default function FacultyPage() {
                   />
                 </Stack>
                 <Typography variant="body2" className="faculty-meta faculty-assigned-halls">
-                  <span className="faculty-meta-label">Assigned Hall(s):</span>{' '}
+                  <span className="faculty-meta-label">Assigned hall:</span>{' '}
                   <span className="faculty-meta-value">
-                    {assignedHalls.length > 0 ? assignedHalls.join(', ') : 'Not assigned'}
+                    {assignedHalls.length > 0 ? assignedHalls.join(', ') : '-'}
                   </span>
                 </Typography>
+                <Typography variant="body2" className="faculty-meta">
+                  <span className="faculty-meta-label">Schedule:</span>{' '}
+                  <span className="faculty-meta-value">
+                    {assignedSchedules.length > 0
+                      ? assignedSchedules
+                          .map(
+                            (schedule) =>
+                              `${schedule.hallCode} ${formatAssignmentDate(schedule.examDate)} ${schedule.sessionName}`.trim()
+                          )
+                          .join(', ')
+                      : '-'}
+                  </span>
+                </Typography>
+
                 <Typography variant="body2" className="faculty-meta">
                   <span className="faculty-meta-label">Department:</span>{' '}
                   <span className="faculty-meta-value">{item.department}</span>
@@ -569,58 +668,7 @@ export default function FacultyPage() {
         <Typography sx={{ mt: 2 }}>No faculty found for selected filters.</Typography>
       )}
 
-      <Card sx={{ mt: 2 }}>
-        <CardContent>
-          <Box className="faculty-grid">
-            {practicalVenues.map((venue) => (
-              <Card className="hall-card faculty-card" key={venue.id || venue.hallCode}>
-                <CardContent className="faculty-card-content">
-                  <Stack direction="row" justifyContent="space-between" alignItems="center">
-                    <Typography variant="h6">{venue.hallCode}</Typography>
-                    <Chip
-                      label={venue.isActive ? 'Active' : 'Inactive'}
-                      color={venue.isActive ? 'success' : 'error'}
-                      className={`status-chip ${venue.isActive ? 'status-chip-active' : 'status-chip-inactive'}`}
-                    />
-                  </Stack>
-                  <Typography variant="body2" className="faculty-meta">
-                    <span className="faculty-meta-label">Rows:</span>{' '}
-                    <span className="faculty-meta-value">{venue.rows}</span>
-                  </Typography>
-                  <Typography variant="body2" className="faculty-meta">
-                    <span className="faculty-meta-label">Cols:</span>{' '}
-                    <span className="faculty-meta-value">{venue.cols}</span>
-                  </Typography>
-                  <Typography variant="body2" className="faculty-meta">
-                    <span className="faculty-meta-label">Students/Bench:</span>{' '}
-                    <span className="faculty-meta-value">{venue.studentsPerBench}</span>
-                  </Typography>
-                  <Typography variant="body2" className="faculty-meta">
-                    <span className="faculty-meta-label">Exam Type:</span>{' '}
-                    <span className="faculty-meta-value">{String(venue.examType || 'SEMESTER')}</span>
-                  </Typography>
-                  <Typography variant="body2" className="faculty-meta">
-                    <span className="faculty-meta-label">Capacity:</span>{' '}
-                    <span className="faculty-meta-value">{venue.capacity}</span>
-                  </Typography>
-                  <Typography variant="body2" className="faculty-meta">
-                    <span className="faculty-meta-label">Supervisors:</span>{' '}
-                    <span className="faculty-meta-value">{venue.supervisors}</span>
-                  </Typography>
-                  <Typography variant="body2" className="faculty-meta">
-                    <span className="faculty-meta-label">Supervisor Allocation:</span>{' '}
-                    <span className="faculty-meta-value">Auto</span>
-                  </Typography>
-                  <Typography variant="body2" className="faculty-meta">
-                    <span className="faculty-meta-label">Student Occupancy Strength:</span>{' '}
-                    <span className="faculty-meta-value">{venue.capacity} / {venue.capacity}</span>
-                  </Typography>
-                </CardContent>
-              </Card>
-            ))}
-          </Box>
-        </CardContent>
-      </Card>
+
 
       <Dialog open={dialogOpen} onClose={closeDialog} fullWidth maxWidth="sm">
         <DialogTitle>{editingFaculty ? 'Edit Faculty' : 'Add Faculty'}</DialogTitle>

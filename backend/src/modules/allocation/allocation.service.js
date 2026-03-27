@@ -175,6 +175,8 @@ async function generateAllocation(payload) {
     allocationRepository.listCourseSummaryByYear(input.yearFilter)
   ])
 
+  console.log('[DEBUG] listActiveHalls examType=', input.examType, '-> returned:', halls)
+
   if (halls.length === 0) {
     const err = new Error('No active halls available')
     err.status = 409
@@ -197,9 +199,80 @@ async function generateAllocation(payload) {
   }
 
   const queues = cloneQueueMap(grouped)
-  const deptOrder = buildDeptOrder(grouped, input.primaryDept, input.secondaryDept)
+  
+  const sortedDepts = [...grouped.keys()].sort((a, b) => {
+    const diff = grouped.get(b).length - grouped.get(a).length
+    if (diff !== 0) return diff
+    return a.localeCompare(b)
+  })
+
+  const streamA = []
+  const streamB = []
+  
+  if (input.primaryDept && grouped.has(input.primaryDept)) {
+    streamA.push(input.primaryDept)
+  }
+  if (input.secondaryDept && grouped.has(input.secondaryDept)) {
+    streamB.push(input.secondaryDept)
+  }
+
+  const explicitA = ['CS', 'IT', 'AE', 'CG', 'EE', 'CE', 'SE']
+  const explicitB = ['EC', 'AD', 'BT', 'TT', 'FT', 'ME', 'CH']
+
+  for (const d of explicitA) {
+    if (grouped.has(d) && !streamA.includes(d) && !streamB.includes(d)) streamA.push(d)
+  }
+  for (const d of explicitB) {
+    if (grouped.has(d) && !streamA.includes(d) && !streamB.includes(d)) streamB.push(d)
+  }
+
+  let weightA = streamA.reduce((sum, d) => sum + grouped.get(d).length, 0)
+  let weightB = streamB.reduce((sum, d) => sum + grouped.get(d).length, 0)
+
+  for (const d of sortedDepts) {
+    if (streamA.includes(d) || streamB.includes(d)) continue
+    if (weightA <= weightB) {
+      streamA.push(d)
+      weightA += grouped.get(d).length
+    } else {
+      streamB.push(d)
+      weightB += grouped.get(d).length
+    }
+  }
+
   const hallLayouts = []
-  const deptCursor = { index: 0 }
+  
+  let globalIndexA = 0
+  let globalIndexB = 0
+
+  function getNextDeptA() {
+    while (globalIndexA < streamA.length) {
+      const d = streamA[globalIndexA]
+      globalIndexA += 1
+      if (remainingInDept(queues, d) > 0) return d
+    }
+    return ''
+  }
+
+  function getNextDeptB() {
+    while (globalIndexB < streamB.length) {
+      const d = streamB[globalIndexB]
+      globalIndexB += 1
+      if (remainingInDept(queues, d) > 0) return d
+    }
+    return ''
+  }
+
+  function getNextForParity(isEvenIndex) {
+    if (isEvenIndex) {
+      return getNextDeptA() || getNextDeptB()
+    } else {
+      return getNextDeptB() || getNextDeptA()
+    }
+  }
+
+  let activePrimaryDept = getNextForParity(true)
+  let activeSecondaryDept = getNextForParity(false)
 
   for (const hall of halls) {
     const rows = Math.max(Number(hall.rows || 0), 0)
@@ -212,64 +285,71 @@ async function generateAllocation(payload) {
       const rollNumbers = []
       const rowDepts = new Set()
 
-      if (studentsPerBenchByExamType === 2) {
-        // Practical rule for periodic tests:
-        // for each bench, right seat should be from a different department than left seat.
-        for (let benchIndex = 0; benchIndex < cols; benchIndex += 1) {
-          const leftDept = pickNextDeptRoundRobin(queues, deptOrder, deptCursor)
-          if (!leftDept) {
-            break
-          }
+      let rowDept = rowIndex % 2 === 0 ? activePrimaryDept : activeSecondaryDept
 
-          const leftQueue = queues.get(leftDept) || []
-          const leftStudent = leftQueue.shift()
-          if (!leftStudent) {
-            continue
-          }
+      // If the assigned department for this parity ran out, try picking a new one
+      if (rowDept && remainingInDept(queues, rowDept) === 0) {
+        const nextDept = getNextForParity(rowIndex % 2 === 0)
 
-          rollNumbers.push(leftStudent.studentId)
-          rowDepts.add(leftDept)
-          assignedCount += 1
-
-          const rightDept = pickNextDeptRoundRobinExcluding(
-            queues,
-            deptOrder,
-            deptCursor,
-            leftDept
-          )
-          if (!rightDept) {
-            continue
-          }
-
-          const rightQueue = queues.get(rightDept) || []
-          const rightStudent = rightQueue.shift()
-          if (!rightStudent) {
-            continue
-          }
-
-          rollNumbers.push(rightStudent.studentId)
-          rowDepts.add(rightDept)
-          assignedCount += 1
-        }
-      } else {
-        const rowDept = pickNextDeptRoundRobin(queues, deptOrder, deptCursor)
-        const queue = queues.get(rowDept) || []
-
-        for (let seatIndex = 0; seatIndex < seatsPerRow; seatIndex += 1) {
-          const student = queue.shift()
-          if (!student) {
-            break
-          }
-          rollNumbers.push(student.studentId)
-          if (rowDept) {
-            rowDepts.add(rowDept)
-          }
-          assignedCount += 1
+        if (rowIndex % 2 === 0) {
+          activePrimaryDept = nextDept
+          rowDept = activePrimaryDept
+        } else {
+          activeSecondaryDept = nextDept
+          rowDept = activeSecondaryDept
         }
       }
 
-      const rowDeptLabel =
-        rowDepts.size === 0 ? '-' : rowDepts.size === 1 ? [...rowDepts][0] : 'MIXED'
+      // If we still don't have a department (everything drained except maybe the other active parity)
+      if (!rowDept) {
+        rowDept = rowIndex % 2 === 0 ? activeSecondaryDept : activePrimaryDept
+        if (rowDept && remainingInDept(queues, rowDept) === 0) {
+          rowDept = ''
+        }
+      }
+
+      let queue = queues.get(rowDept) || []
+
+      for (let seatIndex = 0; seatIndex < seatsPerRow; seatIndex += 1) {
+        let student = queue.shift()
+        
+        // If it runs out mid-row, fallback to a new one
+        if (!student) {
+          const nextDept = getNextForParity(rowIndex % 2 === 0)
+          
+          if (nextDept) {
+            if (rowIndex % 2 === 0) {
+              activePrimaryDept = nextDept
+              rowDept = activePrimaryDept
+            } else {
+              activeSecondaryDept = nextDept
+              rowDept = activeSecondaryDept
+            }
+          } else {
+            // No next dept, try the other active one
+            rowDept = rowIndex % 2 === 0 ? activeSecondaryDept : activePrimaryDept
+          }
+          
+          queue = queues.get(rowDept) || []
+          student = queue.shift()
+          
+          if (student && rowDept) {
+            rowDepts.add(rowDept)
+          }
+        }
+
+        if (!student) {
+          break
+        }
+
+        rollNumbers.push(student.studentId)
+        if (rowDept && !rowDepts.has(rowDept)) {
+          rowDepts.add(rowDept)
+        }
+        assignedCount += 1
+      }
+
+      const rowDeptLabel = rowDepts.size === 0 ? '-' : rowDepts.size === 1 ? [...rowDepts][0] : 'MIXED'
 
       layoutRows.push({
         rowLabel: getRowLabel(rowIndex),
@@ -279,16 +359,18 @@ async function generateAllocation(payload) {
       })
     }
 
-    hallLayouts.push({
-      hallId: hall.id,
-      hallCode: hall.hallCode,
-      rows: hall.rows,
-      cols: hall.cols,
-      studentsPerBench: studentsPerBenchByExamType,
-      assignedCount,
-      facultyAssignee: null,
-      layoutRows
-    })
+    if (assignedCount > 0) {
+      hallLayouts.push({
+        hallId: hall.id,
+        hallCode: hall.hallCode,
+        rows: hall.rows,
+        cols: hall.cols,
+        studentsPerBench: studentsPerBenchByExamType,
+        assignedCount,
+        facultyAssignee: null,
+        layoutRows
+      })
+    }
   }
 
   const unallocated = []

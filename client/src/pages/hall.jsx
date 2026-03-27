@@ -40,14 +40,16 @@ const PRACTICAL_VENUE_RULES = [
   { prefix: 'CSE LAB', min: 1, max: 5 },
   { prefix: 'ME LAB', min: 1, max: 6 },
   { prefix: 'CT LAB', min: 1, max: 2 },
-  { prefix: 'AIML LAB', min: 1, max: 6 }
+  { prefix: 'AIML LAB', min: 1, max: 6 },
+  { exact: 'WORKSHOP LAB' }
 ]
 const PRACTICAL_LAB_GROUPS = [
   { title: 'IT Labs', halls: ['IT LAB 1', 'IT LAB 2', 'IT LAB 3', 'IT LAB 4', 'IT LAB 5'] },
   { title: 'CSE Labs', halls: ['CSE LAB 1', 'CSE LAB 2', 'CSE LAB 3', 'CSE LAB 4', 'CSE LAB 5'] },
   { title: 'ME Labs', halls: ['ME LAB 1', 'ME LAB 2', 'ME LAB 3', 'ME LAB 4', 'ME LAB 5', 'ME LAB 6'] },
   { title: 'CT Labs', halls: ['CT LAB 1', 'CT LAB 2'] },
-  { title: 'AIML Labs', halls: ['AIML LAB 1', 'AIML LAB 2', 'AIML LAB 3', 'AIML LAB 4', 'AIML LAB 5', 'AIML LAB 6'] }
+  { title: 'AIML Labs', halls: ['AIML LAB 1', 'AIML LAB 2', 'AIML LAB 3', 'AIML LAB 4', 'AIML LAB 5', 'AIML LAB 6'] },
+  { title: 'Workshop Labs', halls: ['WORKSHOP LAB'] }
 ]
 const PRACTICAL_DEFAULT_ROWS = 6
 const PRACTICAL_DEFAULT_COLS = 10
@@ -107,6 +109,10 @@ function isAllowedPracticalVenue(hallCode) {
   const normalized = normalizeHallName(hallCode)
   const compact = normalized.replace(/\s+/g, '')
   return PRACTICAL_VENUE_RULES.some((rule) => {
+    if (rule.exact) {
+      return normalized === normalizeHallName(rule.exact)
+    }
+
     const compactPrefix = rule.prefix.replace(/\s+/g, '')
     const regex = new RegExp(`^${compactPrefix}([0-9]+)$`)
     const match = compact.match(regex)
@@ -116,6 +122,13 @@ function isAllowedPracticalVenue(hallCode) {
     const number = Number(match[1])
     return Number.isFinite(number) && number >= rule.min && number <= rule.max
   })
+}
+
+function isPracticalOnlyHall(hall) {
+  return (
+    String(hall?.examType || '').trim().toUpperCase() === 'PRACTICAL' ||
+    isAllowedPracticalVenue(hall?.hallCode)
+  )
 }
 
 function normalizeHall(hall) {
@@ -158,7 +171,7 @@ export default function Hall() {
     if (globalExamType !== 'PRACTICAL') {
       return halls
     }
-    return halls.filter((hall) => isAllowedPracticalVenue(hall.hallCode))
+    return halls.filter((hall) => isPracticalOnlyHall(hall))
   }, [globalExamType, halls])
 
   const isPracticalView = globalExamType === 'PRACTICAL'
@@ -171,12 +184,14 @@ export default function Hall() {
     return visibleHalls.map((hall) => {
       const studentsPerBench = getDefaultStudentsPerBenchByExamType(globalExamType)
       const capacity = calculateCapacity(hall.rows, hall.cols, studentsPerBench, globalExamType)
+      const supervisors = (hall.block === 'SF' || hall.block === 'ME' || capacity >= 45) ? 2 : 1
 
       return {
         ...hall,
         examType: globalExamType,
         studentsPerBench,
-        capacity
+        capacity,
+        supervisors
       }
     })
   }, [globalExamType, isPracticalView, visibleHalls])

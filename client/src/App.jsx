@@ -152,13 +152,18 @@ const appTheme = createTheme({
   }
 })
 
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
+import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs'
+
 export default function App() {
   return (
     <ThemeProvider theme={appTheme}>
-      <CssBaseline />
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
+      <LocalizationProvider dateAdapter={AdapterDayjs}>
+        <CssBaseline />
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </LocalizationProvider>
     </ThemeProvider>
   )
 }

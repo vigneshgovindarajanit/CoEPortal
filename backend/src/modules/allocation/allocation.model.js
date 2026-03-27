@@ -9,12 +9,13 @@ function parseYear(value) {
 function normalizeYearFilter(value, rawYears) {
   const yearsInput = Array.isArray(rawYears) ? rawYears : []
 
+  if (value === 'ALL' || yearsInput.includes('ALL')) {
+    return { yearFilter: 'ALL', yearValues: null }
+  }
+
   if (
-    value === undefined ||
-    value === null ||
-    value === '' ||
-    value === 'ALL' ||
-    yearsInput.includes('ALL')
+    (value === undefined || value === null || value === '') &&
+    yearsInput.length === 0
   ) {
     return { yearFilter: 'ALL', yearValues: null }
   }

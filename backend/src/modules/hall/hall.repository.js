@@ -38,6 +38,21 @@ async function initSchema() {
           "ALTER TABLE hall ADD COLUMN exam_type VARCHAR(20) NOT NULL DEFAULT 'SEMESTER' AFTER students_per_bench"
         )
       }
+
+      // Keep workshop lab categorized as practical in existing databases.
+      await db.query(
+        `
+          UPDATE hall
+          SET
+            exam_type = 'PRACTICAL',
+            seat_rows = 6,
+            seat_cols = 10,
+            students_per_bench = 1,
+            capacity = 60,
+            supervisors = 1
+          WHERE UPPER(TRIM(hall_code)) = 'WORKSHOP LAB'
+        `
+      )
     })()
   }
 
@@ -49,6 +64,13 @@ function mapRowToHall(row) {
     return null
   }
 
+  const capacity = calculateCapacity(
+    Number(row.seat_rows || 0),
+    Number(row.seat_cols || 0),
+    Number(row.students_per_bench || 0),
+    row.exam_type || 'SEMESTER'
+  )
+
   return {
     id: row.id,
     block: row.block,
@@ -58,21 +80,12 @@ function mapRowToHall(row) {
     cols: row.seat_cols,
     studentsPerBench: row.students_per_bench,
     examType: row.exam_type || 'SEMESTER',
-    capacity: calculateCapacity(
-      Number(row.seat_rows || 0),
-      Number(row.seat_cols || 0),
-      Number(row.students_per_bench || 0),
-      row.exam_type || 'SEMESTER'
-    ),
+    capacity,
     supervisors: calculateSupervisors(
-      calculateCapacity(
-        Number(row.seat_rows || 0),
-        Number(row.seat_cols || 0),
-        Number(row.students_per_bench || 0),
-        row.exam_type || 'SEMESTER'
-      ),
+      capacity,
       Number(row.students_per_bench || 0),
-      row.exam_type || 'SEMESTER'
+      row.exam_type || 'SEMESTER',
+      row.block
     ),
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,

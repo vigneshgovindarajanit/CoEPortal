@@ -55,16 +55,13 @@ function calculateCapacity(rows, cols, studentsPerBench, examType = 'SEMESTER') 
   return rows * cols * studentsPerBench
 }
 
-function calculateSupervisors(capacity, studentsPerBench, examType = 'SEMESTER') {
+function calculateSupervisors(capacity, studentsPerBench, examType = 'SEMESTER', block = '') {
   if (examType === 'PRACTICAL') {
     return 1
   }
 
-  if (studentsPerBench === 1 && capacity >= 120) {
-    return 4
-  }
-
-  if ([45, 60, 90, 120].includes(capacity)) {
+  const normalizedBlock = String(block).toUpperCase()
+  if (['ME', 'SF'].includes(normalizedBlock)) {
     return 2
   }
 
@@ -114,7 +111,8 @@ function validateHallInput(payload = {}) {
   const supervisors = calculateSupervisors(
     capacity,
     normalized.studentsPerBench,
-    normalized.examType
+    normalized.examType,
+    normalized.block
   )
   const hallCode = `${normalized.block}${normalized.number}`
 
