@@ -11,7 +11,7 @@ import {
 } from '@mui/material'
 import GoogleIcon from '@mui/icons-material/Google'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { useAuth } from '../context/AuthContext'
+import { useAuth } from '../hooks/useAuth'
 
 export default function LoginPage() {
   const { isAuthenticated, login } = useAuth()

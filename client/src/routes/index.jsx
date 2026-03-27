@@ -1,27 +1,29 @@
-import { Suspense, lazy, useState } from 'react'
-import { BrowserRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation } from 'react-router-dom'
+import { Suspense, lazy } from 'react'
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import ApartmentRoundedIcon from '@mui/icons-material/ApartmentRounded'
-import BadgeRoundedIcon from '@mui/icons-material/BadgeRounded'
-import SchoolRoundedIcon from '@mui/icons-material/SchoolRounded'
-import MenuBookRoundedIcon from '@mui/icons-material/MenuBookRounded'
-import CodeRoundedIcon from '@mui/icons-material/CodeRounded'
-import EventNoteRoundedIcon from '@mui/icons-material/EventNoteRounded'
-import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
 import AssignmentTurnedInRoundedIcon from '@mui/icons-material/AssignmentTurnedInRounded'
+import BadgeRoundedIcon from '@mui/icons-material/BadgeRounded'
+import CodeRoundedIcon from '@mui/icons-material/CodeRounded'
+import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
+import EventNoteRoundedIcon from '@mui/icons-material/EventNoteRounded'
 import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded'
-import { useAuth } from '../context/AuthContext'
+import MenuBookRoundedIcon from '@mui/icons-material/MenuBookRounded'
+import SchoolRoundedIcon from '@mui/icons-material/SchoolRounded'
+import AppLayout from '../layout/AppLayout'
+import AuthLayout from '../layout/AuthLayout'
+import { useAuth } from '../hooks/useAuth'
 
-const DashboardPage = lazy(() => import('../pages/dashboard'))
-const HallPage = lazy(() => import('../pages/hall'))
-const FacultyPage = lazy(() => import('../pages/faculty'))
-const StudentsPage = lazy(() => import('../pages/students'))
-const SeatingPage = lazy(() => import('../pages/seating'))
-const ExamSchedulePage = lazy(() => import('../pages/examSchedule'))
-const CoursePage = lazy(() => import('../pages/course'))
-const CourseRegistrationPage = lazy(() => import('../pages/courseRegistration'))
-const LoginPage = lazy(() => import('../pages/login'))
-const LogoutPage = lazy(() => import('../pages/logout'))
-const ErrorPage = lazy(() => import('../pages/error'))
+const DashboardPage = lazy(() => import('../pages/Dashboard'))
+const HallPage = lazy(() => import('../pages/Hall'))
+const FacultyPage = lazy(() => import('../pages/Faculty'))
+const StudentsPage = lazy(() => import('../pages/Students'))
+const SeatingPage = lazy(() => import('../pages/Seating'))
+const ExamSchedulePage = lazy(() => import('../pages/ExamSchedule'))
+const CoursePage = lazy(() => import('../pages/Course'))
+const CourseRegistrationPage = lazy(() => import('../pages/CourseRegistration'))
+const LoginPage = lazy(() => import('../pages/Login'))
+const LogoutPage = lazy(() => import('../pages/Logout'))
+const ErrorPage = lazy(() => import('../pages/Error'))
 
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: <DashboardRoundedIcon fontSize="small" /> },
@@ -29,7 +31,11 @@ const NAV_ITEMS = [
   { to: '/faculty', label: 'Faculty', icon: <BadgeRoundedIcon fontSize="small" /> },
   { to: '/students', label: 'Students', icon: <SchoolRoundedIcon fontSize="small" /> },
   { to: '/courses', label: 'Courses', icon: <MenuBookRoundedIcon fontSize="small" /> },
-  { to: '/course-registrations', label: 'Course Registration', icon: <AssignmentTurnedInRoundedIcon fontSize="small" /> },
+  {
+    to: '/course-registrations',
+    label: 'Course Registration',
+    icon: <AssignmentTurnedInRoundedIcon fontSize="small" />
+  },
   { to: '/seating', label: 'Seating', icon: <CodeRoundedIcon fontSize="small" /> },
   { to: '/exam-schedule', label: 'Exam Schedule', icon: <EventNoteRoundedIcon fontSize="small" /> },
   { to: '/logout', label: 'Logout', icon: <LogoutRoundedIcon fontSize="small" /> }
@@ -64,81 +70,18 @@ function PublicOnlyRoute() {
   return <Outlet />
 }
 
-function SidebarLayout() {
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
-  const { user } = useAuth()
-
-  function toggleMobileSidebar() {
-    setMobileSidebarOpen((prev) => !prev)
-  }
-
-  function closeMobileSidebar() {
-    setMobileSidebarOpen(false)
-  }
-
-  return (
-    <div className="layout-root">
-      <aside className={`sidebar${mobileSidebarOpen ? ' sidebar-mobile-open' : ''}`}>
-        <h2 className="sidebar-title">
-          <img
-            src="https://ps.bitsathy.ac.in/static/media/logo.e99a8edb9e376c3ed2e5.png"
-            alt="COE logo"
-            className="sidebar-logo"
-          />
-          <span>COE Portal</span>
-        </h2>
-        <div className="sidebar-user-card">
-          <span className="sidebar-user-role">{user?.role || 'Admin'}</span>
-          <strong className="sidebar-user-name">{user?.username || 'admin'}</strong>
-        </div>
-        <nav className="sidebar-nav">
-          {NAV_ITEMS.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                `sidebar-link${isActive ? ' sidebar-link-active' : ''}`
-              }
-              onClick={closeMobileSidebar}
-            >
-              <span className="sidebar-link-icon" aria-hidden="true">
-                {item.icon}
-              </span>
-              <span className="sidebar-link-text">{item.label}</span>
-            </NavLink>
-          ))}
-        </nav>
-      </aside>
-      {mobileSidebarOpen && (
-        <button className="sidebar-backdrop" aria-label="Close sidebar" onClick={closeMobileSidebar} />
-      )}
-      <main className="layout-content">
-        <button
-          className="menu-toggle-btn"
-          aria-label="Toggle sidebar"
-          aria-expanded={mobileSidebarOpen}
-          onClick={toggleMobileSidebar}
-        >
-          {'\u2630'}
-        </button>
-        <Suspense fallback={<div className="route-loading">Loading...</div>}>
-          <Outlet />
-        </Suspense>
-      </main>
-    </div>
-  )
-}
-
 export default function AppRoutes() {
   return (
     <BrowserRouter>
       <Routes>
         <Route element={<PublicOnlyRoute />}>
-          <Route path="/login" element={<LoginPage />} />
+          <Route element={<AuthLayout />}>
+            <Route path="/login" element={<LoginPage />} />
+          </Route>
         </Route>
         <Route path="/logout" element={<LogoutPage />} />
         <Route element={<ProtectedRoute />}>
-          <Route element={<SidebarLayout />}>
+          <Route element={<AppLayout navItems={NAV_ITEMS} />}>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/halls" element={<HallPage />} />
@@ -150,9 +93,15 @@ export default function AppRoutes() {
             <Route path="/exam-schedule" element={<ExamSchedulePage />} />
           </Route>
         </Route>
-        <Route path="*" element={<Suspense fallback={<div className="route-loading">Loading...</div>}><ErrorPage /></Suspense>} />
+        <Route
+          path="*"
+          element={
+            <Suspense fallback={<div className="route-loading">Loading...</div>}>
+              <ErrorPage />
+            </Suspense>
+          }
+        />
       </Routes>
     </BrowserRouter>
   )
 }
-

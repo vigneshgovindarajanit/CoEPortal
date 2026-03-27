@@ -1,4 +1,4 @@
-import api from '../lib/axios'
+import api from '../lib/api'
 
 export async function generateAllocation(payload) {
   const response = await api.post('/allocations/generate', payload)

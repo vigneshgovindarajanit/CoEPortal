@@ -1,6 +1,6 @@
 import AppRoutes from './routes'
 import { CssBaseline, ThemeProvider, createTheme } from '@mui/material'
-import { AuthProvider } from './context/AuthContext'
+import { AuthProvider } from './hooks/useAuth'
 
 const appTheme = createTheme({
   palette: {

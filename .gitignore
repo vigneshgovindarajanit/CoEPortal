@@ -33,17 +33,5 @@ lerna-debug.log*
 *.sln
 *.sw?
 
-# Local maintenance / scratch scripts
-check_batches.js
-check_batches2.js
-check_halls.js
-check_history.js
-check_tables.js
-check_tables2.js
-check_users.js
-check_years.js
-dump_courses.js
-fix_courses.js
-migrate_db.js
-reset_admin.js
-out.json
+# Local maintenance output
+backend/scripts/out.json

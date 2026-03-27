@@ -1,0 +1,28 @@
+const express = require('express')
+const authRoutes = require('../modules/auth/auth.routes')
+const hallRoutes = require('../modules/hall/hall.routes')
+const facultyRoutes = require('../modules/faculty/faculty.routes')
+const studentRoutes = require('../modules/student/student.routes')
+const courseRoutes = require('../modules/course/course.routes')
+const courseRegistrationRoutes = require('../modules/courseRegistration/courseRegistration.routes')
+const allocationRoutes = require('../modules/allocation/allocation.routes')
+const examScheduleRoutes = require('../modules/examSchedule/examSchedule.routes')
+const dashboardRoutes = require('../modules/dashboard/dashboard.routes')
+const seatingFilterRoutes = require('../modules/seatingFilter/seatingFilter.routes')
+const authenticateRequest = require('../middleware/auth.middleware')
+
+const router = express.Router()
+
+router.use('/auth', authRoutes)
+router.use(authenticateRequest)
+router.use('/halls', hallRoutes)
+router.use('/faculty', facultyRoutes)
+router.use('/students', studentRoutes)
+router.use('/courses', courseRoutes)
+router.use('/course-registrations', courseRegistrationRoutes)
+router.use('/allocations', allocationRoutes)
+router.use('/exam-schedules', examScheduleRoutes)
+router.use('/dashboard', dashboardRoutes)
+router.use('/seating-filters', seatingFilterRoutes)
+
+module.exports = router

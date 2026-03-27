@@ -1,5 +1,5 @@
-const studentRepository = require('../student/student.repository')
-const hallRepository = require('../hall/hall.repository')
+const studentRepository = require('../modules/student/student.repository')
+const hallRepository = require('../modules/hall/hall.repository')
 
 async function getHalls(examType, isActive = true) {
   if (examType) {

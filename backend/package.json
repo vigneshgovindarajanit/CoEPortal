@@ -2,11 +2,11 @@
   "name": "coeportal-backend",
   "private": true,
   "version": "0.1.0",
-  "main": "src/server.js",
+  "main": "server.js",
   "type": "commonjs",
   "scripts": {
-    "dev": "nodemon src/server.js",
-    "start": "nodemon src/server.js"
+    "dev": "nodemon server.js",
+    "start": "nodemon server.js"
   },
   "dependencies": {
     "cors": "^2.8.6",

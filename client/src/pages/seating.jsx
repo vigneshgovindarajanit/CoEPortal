@@ -22,7 +22,7 @@ import {
 import ApartmentRoundedIcon from '@mui/icons-material/ApartmentRounded'
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded'
 import ViewModuleRoundedIcon from '@mui/icons-material/ViewModuleRounded'
-import api from '../lib/axios'
+import api from '../lib/api'
 import {
   fetchLatestAllocation,
   generateAllocation

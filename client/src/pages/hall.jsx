@@ -25,7 +25,7 @@ import BlockRoundedIcon from '@mui/icons-material/BlockRounded'
 import ChairRoundedIcon from '@mui/icons-material/ChairRounded'
 import ScienceRoundedIcon from '@mui/icons-material/ScienceRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
-import api from '../lib/axios'
+import api from '../lib/api'
 import { confirmAction } from '../utils/confirmAction'
 
 const BLOCK_OPTIONS = ['EW', 'WW', 'ME', 'SF', 'AE', 'MH']

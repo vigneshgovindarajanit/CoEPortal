@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useState } from 'react'
-import api from '../lib/axios'
+import { createContext, createElement, useContext, useEffect, useState } from 'react'
+import { fetchProfile, loginUser } from '../services/auth.service'
 
 const TOKEN_STORAGE_KEY = 'coeportal.auth.token'
 const USER_STORAGE_KEY = 'coeportal.auth.user'
@@ -50,9 +50,9 @@ export function AuthProvider({ children }) {
       }
 
       try {
-        const response = await api.get('/auth/me')
+        const userProfile = await fetchProfile()
         setToken(existingToken)
-        setUser(response.data?.user || response.data)
+        setUser(userProfile)
       } catch {
         clearStoredSession()
         setToken(null)
@@ -77,8 +77,7 @@ export function AuthProvider({ children }) {
   }, [])
 
   async function login(credentials) {
-    const response = await api.post('/auth/login', credentials)
-    const authPayload = response.data?.user ? response.data : response.data?.data ?? response.data
+    const authPayload = await loginUser(credentials)
 
     persistSession(authPayload.token, authPayload.user)
     setToken(authPayload.token)
@@ -101,7 +100,7 @@ export function AuthProvider({ children }) {
     logout
   }
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  return createElement(AuthContext.Provider, { value }, children)
 }
 
 export function useAuth() {

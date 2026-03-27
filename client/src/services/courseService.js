@@ -1,4 +1,4 @@
-import api from '../lib/axios'
+import api from '../lib/api'
 
 export async function fetchCourses(params = {}) {
   const response = await api.get('/courses', { params })
