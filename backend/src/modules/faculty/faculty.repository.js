@@ -1,5 +1,6 @@
 const db = require('../../config/db')
 const { calculateCapacity, calculateSupervisors } = require('../hall/hall.model')
+const allocationRepository = require('../allocation/allocation.repository')
 
 function normalizeIsoDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim()) ? String(value || '').trim() : ''
@@ -656,10 +657,57 @@ async function pickEligibleFaculty(connection, department = '') {
   return rows[0] || null
 }
 
-async function autoAssignAllLatestAllocation() {
-  if (!(await hasAllocationTables())) {
-    const err = new Error('No seating allocation found. Generate seating first.')
-    err.status = 409
+async function pickEligibleFacultyForScheduleSlot(connection, department = '', examDate = '', sessionName = '') {
+  const where = [
+    "LOWER(f.role) NOT LIKE '%principal%'",
+    "LOWER(f.role) NOT LIKE '%adjunct faculty%'",
+    "LOWER(f.role) NOT LIKE '%hindi teacher%'",
+    'f.assigned_workload < f.max_workload',
+    `NOT EXISTS (
+      SELECT 1
+      FROM exam_schedules es
+      WHERE es.exam_date = ?
+        AND es.session_name = ?
+        AND es.supervisor_faculty_id = f.faculty_id
+    )`
+  ]
+  const params = [examDate, sessionName]
+
+  if (department) {
+    where.push('f.dept = ?')
+    params.push(department)
+  }
+
+  const [rows] = await connection.query(
+    `
+      SELECT f.faculty_id, f.name, f.role, f.dept, f.max_workload, f.assigned_workload
+      FROM faculty f
+      WHERE ${where.join(' AND ')}
+      ORDER BY f.max_workload DESC, f.assigned_workload ASC, f.name ASC
+      LIMIT 1
+      FOR UPDATE
+    `,
+    params
+  )
+
+  return rows[0] || null
+}
+
+async function autoAssignAllLatestAllocation(filters = {}) {
+  const startDate = normalizeIsoDate(filters.startDate)
+  const endDate = normalizeIsoDate(filters.endDate)
+  const sessionName = String(filters.sessionName || 'ALL').trim().toUpperCase()
+  const examType = String(filters.examType || '').trim().toUpperCase()
+
+  if (!startDate || !endDate) {
+    const err = new Error('Start date and end date are required for assign all halls')
+    err.status = 400
+    throw err
+  }
+
+  if (startDate > endDate) {
+    const err = new Error('Start date cannot be later than end date')
+    err.status = 400
     throw err
   }
 
@@ -667,57 +715,67 @@ async function autoAssignAllLatestAllocation() {
   try {
     await connection.beginTransaction()
 
-    const [allocationRows] = await connection.query(
-      `
-        SELECT id
-        FROM exam_allocations
-        ORDER BY id DESC
-        LIMIT 1
-        FOR UPDATE
-      `
-    )
-
-    const allocationId = Number(allocationRows[0]?.id || 0)
-    if (!allocationId) {
-      const err = new Error('No seating allocation found. Generate seating first.')
+    const hasExamSchedules = await ensureExamScheduleAssignmentColumns(connection)
+    if (!hasExamSchedules) {
+      const err = new Error('No exam schedule found. Create an exam schedule first.')
       err.status = 409
       throw err
     }
 
-    const [hallRows] = await connection.query(
-      `
-        SELECT
-          eah.id AS hall_allocation_id,
-          eah.hall_code,
-          eah.seat_rows,
-          eah.seat_cols,
-          eah.students_per_bench,
-          eah.faculty_id,
-          eah.faculty_name,
-          eah.faculty_id_two,
-          eah.faculty_name_two,
-          h.block_name,
-          h.exam_type,
-          (
-            SELECT r.dept_code
-            FROM exam_allocation_rows r
-            WHERE r.hall_allocation_id = eah.id
-              AND r.dept_code IS NOT NULL
-              AND r.dept_code <> '-'
-            ORDER BY r.row_index ASC
-            LIMIT 1
-          ) AS preferred_dept
-        FROM exam_allocation_halls eah
-        LEFT JOIN hall h ON h.id = eah.hall_id
-        WHERE eah.allocation_id = ?
-        ORDER BY eah.id ASC
-      `,
-      [allocationId]
+    const where = ['exam_date BETWEEN ? AND ?']
+    const params = [startDate, endDate]
+
+    if (examType) {
+      where.push('exam_type = ?')
+      params.push(examType)
+    }
+
+    const latestAllocation = await allocationRepository.findLatestAllocation(examType || 'SEMESTER')
+    const allowedHallCodes = new Set(
+      (
+        latestAllocation?.hallLayouts?.length
+          ? latestAllocation.hallLayouts.map((layout) => String(layout?.hall?.hallCode || '').trim())
+          : (await allocationRepository.listActiveHalls(examType || 'SEMESTER')).map((hall) =>
+              String(hall.hallCode || '').trim()
+            )
+      ).filter(Boolean)
     )
 
-    if (hallRows.length === 0) {
-      const err = new Error('No halls found in latest seating allocation')
+    if (allowedHallCodes.size === 0) {
+      const err = new Error(`No active halls available for ${examType || 'SEMESTER'}`)
       err.status = 409
+      throw err
+    }
+
+    if (sessionName && sessionName !== 'ALL') {
+      where.push('session_name = ?')
+      params.push(sessionName)
+    }
+
+    const [scheduleRows] = await connection.query(
+      `
+        SELECT
+          exam_date,
+          session_name,
+          hall_code,
+          MIN(NULLIF(TRIM(department), '')) AS preferred_dept,
+          MAX(CASE WHEN supervisor_faculty_id IS NOT NULL THEN 1 ELSE 0 END) AS has_assignment
+        FROM exam_schedules
+        WHERE ${where.join(' AND ')}
+        GROUP BY exam_date, session_name, hall_code
+        ORDER BY exam_date ASC, session_name ASC, hall_code ASC
+        FOR UPDATE
+      `,
+      params
+    )
+
+    const filteredScheduleRows = scheduleRows.filter((schedule) =>
+      allowedHallCodes.has(String(schedule.hall_code || '').trim())
+    )
+
+    if (filteredScheduleRows.length === 0) {
+      const err = new Error('No exam schedule found for the selected exam type, date range, and session')
+      err.status = 404
       throw err
     }
 
@@ -725,98 +783,87 @@ async function autoAssignAllLatestAllocation() {
     let assignedCount = 0
     let skippedCount = 0
 
-    for (const hall of hallRows) {
-      const requiredSupervisors = getRequiredSupervisorsForHall(hall)
-
-      if (!hall.faculty_id) {
-        let selected = await pickEligibleFaculty(connection, String(hall.preferred_dept || '').trim())
-        if (!selected) {
-          selected = await pickEligibleFaculty(connection, '')
-        }
-
-        if (selected) {
-          await connection.query(
-            `UPDATE faculty SET assigned_workload = assigned_workload + 1 WHERE faculty_id = ?`,
-            [selected.faculty_id]
-          )
-          await connection.query(
-            `UPDATE exam_allocation_halls SET faculty_id = ?, faculty_name = ? WHERE id = ?`,
-            [selected.faculty_id, selected.name, Number(hall.hall_allocation_id)]
-          )
-          assignedCount += 1
-          assignments.push({
-            hallCode: hall.hall_code,
-            facultyId: Number(selected.faculty_id),
-            facultyName: selected.name,
-            status: 'assigned'
-          })
-        } else {
-          skippedCount += 1
-          assignments.push({
-            hallCode: hall.hall_code,
-            facultyId: null,
-            facultyName: null,
-            status: 'no_eligible_faculty'
-          })
-        }
-      } else {
+    for (const schedule of filteredScheduleRows) {
+      if (Number(schedule.has_assignment || 0) > 0) {
         skippedCount += 1
         assignments.push({
-          hallCode: hall.hall_code,
-          facultyId: Number(hall.faculty_id),
-          facultyName: hall.faculty_name,
+          hallCode: schedule.hall_code,
+          examDate: schedule.exam_date,
+          sessionName: schedule.session_name,
+          facultyId: null,
+          facultyName: null,
           status: 'already_assigned'
         })
+        continue
       }
 
-      if (requiredSupervisors > 1) {
-        if (!hall.faculty_id_two) {
-          let selectedTwo = await pickEligibleFaculty(connection, String(hall.preferred_dept || '').trim())
-          if (!selectedTwo) {
-            selectedTwo = await pickEligibleFaculty(connection, '')
-          }
+      let selected = await pickEligibleFacultyForScheduleSlot(
+        connection,
+        String(schedule.preferred_dept || '').trim(),
+        schedule.exam_date,
+        schedule.session_name
+      )
 
-          if (selectedTwo) {
-            await connection.query(
-              `UPDATE faculty SET assigned_workload = assigned_workload + 1 WHERE faculty_id = ?`,
-              [selectedTwo.faculty_id]
-            )
-            await connection.query(
-              `UPDATE exam_allocation_halls SET faculty_id_two = ?, faculty_name_two = ? WHERE id = ?`,
-              [selectedTwo.faculty_id, selectedTwo.name, Number(hall.hall_allocation_id)]
-            )
-            assignedCount += 1
-            assignments.push({
-              hallCode: hall.hall_code,
-              facultyId: Number(selectedTwo.faculty_id),
-              facultyName: selectedTwo.name,
-              status: 'assigned'
-            })
-          } else {
-            skippedCount += 1
-            assignments.push({
-              hallCode: hall.hall_code,
-              facultyId: null,
-              facultyName: null,
-              status: 'no_eligible_faculty'
-            })
-          }
-        } else {
-          skippedCount += 1
-          assignments.push({
-            hallCode: hall.hall_code,
-            facultyId: Number(hall.faculty_id_two),
-            facultyName: hall.faculty_name_two,
-            status: 'already_assigned'
-          })
-        }
+      if (!selected) {
+        selected = await pickEligibleFacultyForScheduleSlot(
+          connection,
+          '',
+          schedule.exam_date,
+          schedule.session_name
+        )
       }
+
+      if (!selected) {
+        skippedCount += 1
+        assignments.push({
+          hallCode: schedule.hall_code,
+          examDate: schedule.exam_date,
+          sessionName: schedule.session_name,
+          facultyId: null,
+          facultyName: null,
+          status: 'no_eligible_faculty'
+        })
+        continue
+      }
+
+      await connection.query(
+        `
+          UPDATE faculty
+          SET assigned_workload = assigned_workload + 1
+          WHERE faculty_id = ?
+        `,
+        [selected.faculty_id]
+      )
+
+      await connection.query(
+        `
+          UPDATE exam_schedules
+          SET supervisor_faculty_id = ?, supervisor_name = ?
+          WHERE exam_date = ?
+            AND session_name = ?
+            AND hall_code = ?
+        `,
+        [selected.faculty_id, selected.name, schedule.exam_date, schedule.session_name, schedule.hall_code]
+      )
+
+      assignedCount += 1
+      assignments.push({
+        hallCode: schedule.hall_code,
+        examDate: schedule.exam_date,
+        sessionName: schedule.session_name,
+        facultyId: Number(selected.faculty_id),
+        facultyName: selected.name,
+        status: 'assigned'
+      })
     }
 
     await connection.commit()
 
     return {
-      allocationId,
+      startDate,
+      endDate,
+      sessionName,
+      examType,
       assignedCount,
       skippedCount,
       assignments
@@ -1037,7 +1084,6 @@ async function cancelAllAssignments() {
           UPDATE exam_schedules
           SET supervisor_faculty_id = NULL, supervisor_name = NULL, supervisor_faculty_id_two = NULL, supervisor_name_two = NULL
           WHERE (supervisor_faculty_id IS NOT NULL OR supervisor_faculty_id_two IS NOT NULL)
-            AND exam_date >= CURRENT_DATE()
         `
       )
       schedulesCleared = Number(scheduleResult.affectedRows || 0)

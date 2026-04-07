@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { jsPDF } from 'jspdf'
 import {
   Alert,
   Box,
@@ -185,6 +186,21 @@ function getFacultyName(faculty) {
   return faculty?.fullName || faculty?.name || 'Not assigned'
 }
 
+function getSupervisorName(schedule) {
+  return String(schedule?.supervisorName || '').trim() || 'Not assigned'
+}
+
+function getScheduleMetaLabel(schedule) {
+  if (!schedule) {
+    return null
+  }
+
+  const dateLabel = formatPrintDate(schedule.examDate)
+  const sessionLabel = String(schedule.sessionName || '').trim().toUpperCase() || '-'
+
+  return `Date: ${dateLabel} | Session: ${sessionLabel}`
+}
+
 function getLayoutDepartments(layout) {
   const deptCounts = {}
   
@@ -207,6 +223,19 @@ function getLayoutDepartments(layout) {
     result.push({ dept, count: deptCounts[dept] })
   }
   return result
+}
+
+function formatPdfFriendlyDate(value) {
+  const normalizedValue = normalizeDateValue(value)
+
+  if (!normalizedValue) {
+    return '-'
+  }
+
+  const date = new Date(`${normalizedValue}T00:00:00`)
+  return Number.isNaN(date.getTime())
+    ? normalizedValue
+    : date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
 export default function SeatingPage() {
@@ -239,7 +268,7 @@ export default function SeatingPage() {
       const [hallsRes, studentsSummaryRes, latestAllocationRes, examSchedulesRes, examScheduleFiltersRes] = await Promise.allSettled([
         api.get('/halls'),
         fetchStudentsSummary(),
-        fetchLatestAllocation(),
+        fetchLatestAllocation({ examType: selectedExamType }),
         fetchExamSchedules({ examType: selectedExamType }),
         fetchExamScheduleFilters({ examType: selectedExamType })
       ])
@@ -316,6 +345,40 @@ export default function SeatingPage() {
     }, 0)
   }, [studentSummary, selectedYears])
 
+  const supervisorsByHall = useMemo(() => {
+    const map = new Map()
+
+    const matchedSchedules = (examSchedules || [])
+      .filter((item) => {
+        const matchesDate = !selectedDateFilter || normalizeDateValue(item.examDate) === selectedDateFilter
+        const matchesSession = !selectedSessionFilter || item.sessionName === selectedSessionFilter
+        return matchesDate && matchesSession
+      })
+      .sort((left, right) => {
+        const leftDate = normalizeDateValue(left.examDate)
+        const rightDate = normalizeDateValue(right.examDate)
+        if (leftDate !== rightDate) {
+          return rightDate.localeCompare(leftDate)
+        }
+        return String(left.sessionName || '').localeCompare(String(right.sessionName || ''))
+      })
+
+    for (const item of matchedSchedules) {
+      const hallCode = String(item?.hallCode || '').trim()
+      if (!hallCode || map.has(hallCode)) {
+        continue
+      }
+
+      map.set(hallCode, {
+        supervisorName: getSupervisorName(item),
+        examDate: item.examDate || '',
+        sessionName: item.sessionName || ''
+      })
+    }
+
+    return map
+  }, [examSchedules, selectedDateFilter, selectedSessionFilter])
+
   const filteredLayouts = useMemo(() => {
     const layouts = allocation?.hallLayouts || []
     const query = layoutSearch.trim().toLowerCase()
@@ -326,10 +389,12 @@ export default function SeatingPage() {
 
     return layouts.filter((layout) => {
       const hallCode = String(layout?.hall?.hallCode || '').toLowerCase()
-      const facultyName = getFacultyName(layout?.facultyAssignee).toLowerCase()
-      return hallCode.includes(query) || facultyName.includes(query)
+      const supervisorName = String(
+        supervisorsByHall.get(String(layout?.hall?.hallCode || '').trim())?.supervisorName || getFacultyName(layout?.facultyAssignee)
+      ).toLowerCase()
+      return hallCode.includes(query) || supervisorName.includes(query)
     })
-  }, [allocation, layoutSearch])
+  }, [allocation, layoutSearch, supervisorsByHall])
 
   const filteredHallsByExamType = useMemo(() => {
     if (selectedExamType === 'PRACTICAL') {
@@ -475,7 +540,155 @@ export default function SeatingPage() {
       setError('No seating layout available to export.')
       return
     }
-    window.print()
+
+    setError('')
+    setSuccess('')
+
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4'
+    })
+
+    const title = 'SEATING ARRANGEMENT'
+    const subtitle = [
+      `Exam Type: ${selectedExamType.replace(/_/g, ' ')}`,
+      `Date: ${formatPdfFriendlyDate(selectedDateFilter || normalizeDateValue(printContext.examDate))}`,
+      `Session: ${printContext.sessionName || '-'}`,
+      `Layouts: ${filteredLayouts.length}`
+    ].join('   |   ')
+
+    doc.setFillColor(111, 66, 193)
+    doc.rect(12, 10, 186, 18, 'F')
+    doc.setTextColor(255, 255, 255)
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(16)
+    doc.text(title, 105, 18, { align: 'center' })
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
+    doc.text(subtitle, 105, 24, { align: 'center' })
+
+    let cursorY = 34
+    const pageWidth = 210
+    const pageMargin = 12
+    const contentWidth = pageWidth - pageMargin * 2
+
+    function drawCenteredText(text, x, y, width, fontSize, color = [31, 45, 61], fontStyle = 'normal') {
+      doc.setFont('helvetica', fontStyle)
+      doc.setFontSize(fontSize)
+      doc.setTextColor(...color)
+      doc.text(String(text || '-'), x + width / 2, y, { align: 'center' })
+    }
+
+    filteredLayouts.forEach((layout, layoutIndex) => {
+      const hallCode = String(layout?.hall?.hallCode || '-').trim()
+      const assignedCount = Number(layout?.assignedCount || 0)
+      const departmentLabel = getLayoutDepartments(layout)
+        .map((item) => `${item.dept} (${item.count})`)
+        .join(', ') || '-'
+      const supervisorLine = [
+        layout?.facultyAssignee?.fullName ? `Supervisor: ${layout.facultyAssignee.fullName}` : null,
+        layout?.facultyAssigneeTwo?.fullName ? `Supervisor 2: ${layout.facultyAssigneeTwo.fullName}` : null
+      ]
+        .filter(Boolean)
+        .join('   |   ') || 'Supervisor: Not assigned'
+
+      if (cursorY > 235 || layoutIndex > 0) {
+        doc.addPage()
+        cursorY = 18
+      }
+
+      doc.setFillColor(238, 231, 251)
+      doc.roundedRect(12, cursorY, 186, 12, 2, 2, 'F')
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(12)
+      doc.setTextColor(76, 29, 149)
+      doc.text(`Hall: ${hallCode}`, 16, cursorY + 7)
+
+      cursorY += 17
+      doc.setTextColor(33, 37, 41)
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(10)
+      doc.text(printContext.title, 12, cursorY)
+      cursorY += 5
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(9)
+      doc.text(`Degree / Semester: ${printContext.degreeSemester}`, 12, cursorY)
+      cursorY += 4.5
+      doc.text(`Date / Session: ${printContext.examDate} ${printContext.sessionName}`, 12, cursorY)
+      cursorY += 4.5
+      doc.text(`Time: ${printContext.timeLabel}`, 12, cursorY)
+      cursorY += 4.5
+      doc.text(`Departments: ${departmentLabel}`, 12, cursorY)
+      cursorY += 4.5
+      doc.text(`Total Students: ${assignedCount}`, 12, cursorY)
+      cursorY += 4.5
+      doc.text(supervisorLine, 12, cursorY)
+      cursorY += 7
+
+      const layoutRows = Array.isArray(layout?.rows) ? layout.rows : []
+      const labelWidth = 18
+      const gap = 3
+      const hallCols = Math.max(Number(layout?.hall?.cols || 0), 1)
+      const seatWidth = (contentWidth - labelWidth - gap * hallCols) / hallCols
+      const rowHeight = 24
+
+      if (!layoutRows.length) {
+        doc.setFont('helvetica', 'italic')
+        doc.setFontSize(10)
+        doc.setTextColor(95, 108, 133)
+        doc.text('No students assigned for this hall.', 12, cursorY + 6)
+        cursorY += 14
+        return
+      }
+
+      for (const row of layoutRows) {
+        if (cursorY + rowHeight > 285) {
+          doc.addPage()
+          cursorY = 18
+        }
+
+        const rowLabel = String(row?.rowLabel || '-')
+        const rowSeats = Array.isArray(row?.rollNumbers) ? row.rollNumbers : []
+        const seatItems = Array.from({ length: hallCols }, (_, index) => ({
+          seatCode: `${rowLabel}${index + 1}`,
+          rollNo: rowSeats[index] || '-'
+        }))
+
+        doc.setFillColor(34, 42, 60)
+        doc.roundedRect(pageMargin, cursorY, labelWidth, rowHeight, 4, 4, 'F')
+        drawCenteredText(rowLabel, pageMargin, cursorY + 10, labelWidth, 18, [255, 255, 255], 'bold')
+
+        for (const [seatIndex, seat] of seatItems.entries()) {
+          const seatX = pageMargin + labelWidth + gap + seatIndex * (seatWidth + gap)
+          doc.setFillColor(255, 255, 255)
+          doc.setDrawColor(214, 221, 235)
+          doc.setLineWidth(0.3)
+          doc.roundedRect(seatX, cursorY, seatWidth, rowHeight, 3, 3, 'FD')
+
+          drawCenteredText(seat.seatCode, seatX, cursorY + 8, seatWidth, 8.5, [111, 128, 160], 'normal')
+
+          doc.setFont('helvetica', 'normal')
+          doc.setFontSize(7.6)
+          doc.setTextColor(20, 29, 45)
+          const rollText = String(seat.rollNo || '-')
+          const wrappedRoll = doc.splitTextToSize(rollText, Math.max(seatWidth - 3, 8))
+          const visibleLines = wrappedRoll.slice(0, 2)
+          const startTextY = cursorY + 15
+          visibleLines.forEach((line, lineIndex) => {
+            doc.text(String(line), seatX + seatWidth / 2, startTextY + lineIndex * 3.8, { align: 'center' })
+          })
+        }
+
+        cursorY += rowHeight + 4
+      }
+
+      cursorY += 4
+    })
+
+    const fileName = `seating-layout-${normalizeDateValue(selectedDateFilter || '') || 'all-dates'}-${String(printContext.sessionName || 'all').toLowerCase()}.pdf`
+    doc.save(fileName)
+    setSuccess('Seating layout PDF downloaded successfully.')
   }
 
   return (
@@ -679,6 +892,13 @@ export default function SeatingPage() {
               const assignedCount = Number(layout.assignedCount || 0)
               const hallCodePrefix = String(layout.hall?.hallCode || '').toUpperCase().substring(0, 2)
               const isScrollableLayout = selectedExamType === 'PERIODIC_TEST' || hallCodePrefix === 'ME' || hallCodePrefix === 'SF'
+              const matchedSupervisor = supervisorsByHall.get(String(layout.hall?.hallCode || '').trim())
+              const matchedSchedule = (examSchedules || []).find((item) => {
+                const matchesHall = String(item?.hallCode || '').trim() === String(layout.hall?.hallCode || '').trim()
+                const matchesDate = !selectedDateFilter || normalizeDateValue(item.examDate) === selectedDateFilter
+                const matchesSession = !selectedSessionFilter || item.sessionName === selectedSessionFilter
+                return matchesHall && matchesDate && matchesSession
+              })
               
               return (
                 <Box key={`${layout.hall.id}-${layout.hallAllocationId || 'new'}`} className="seating-layout-card">
@@ -694,14 +914,33 @@ export default function SeatingPage() {
                           </Box>
                         ))}
                       </Box>
-                      {(layout.facultyAssignee || layout.facultyAssigneeTwo) && (
+                      {matchedSchedule && (
                         <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                          {layout.facultyAssignee && (
+                          <Box
+                            className="seating-layout-dept-chip"
+                            sx={{
+                              background: 'rgba(16, 185, 129, 0.12)',
+                              color: '#047857',
+                              border: '1px solid rgba(4, 120, 87, 0.25)'
+                            }}
+                          >
+                            {getScheduleMetaLabel(matchedSchedule)}
+                          </Box>
+                        </Box>
+                      )}
+                      {(matchedSupervisor || layout.facultyAssignee || layout.facultyAssigneeTwo) && (
+                        <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                          {matchedSupervisor && (
+                            <Box className="seating-layout-dept-chip" sx={{ background: 'rgba(33, 150, 243, 0.1)', color: '#1976d2', border: '1px solid rgba(25, 118, 210, 0.3)' }}>
+                              Supervisor: {matchedSupervisor.supervisorName}
+                            </Box>
+                          )}
+                          {!matchedSupervisor && layout.facultyAssignee && (
                             <Box className="seating-layout-dept-chip" sx={{ background: 'rgba(33, 150, 243, 0.1)', color: '#1976d2', border: '1px solid rgba(25, 118, 210, 0.3)' }}>
                               Supervisor: {layout.facultyAssignee.fullName}
                             </Box>
                           )}
-                          {layout.facultyAssigneeTwo && (
+                          {!matchedSupervisor && layout.facultyAssigneeTwo && (
                             <Box className="seating-layout-dept-chip" sx={{ background: 'rgba(33, 150, 243, 0.1)', color: '#1976d2', border: '1px solid rgba(25, 118, 210, 0.3)' }}>
                               Supervisor 2: {layout.facultyAssigneeTwo.fullName}
                             </Box>

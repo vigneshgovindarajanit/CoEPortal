@@ -30,8 +30,8 @@ export async function autoAssignSupervisor(payload) {
   return response.data
 }
 
-export async function autoAssignAllFaculty() {
-  const response = await api.post('/faculty/auto-assign-all')
+export async function autoAssignAllFaculty(payload = {}) {
+  const response = await api.post('/faculty/auto-assign-all', payload)
   return response.data
 }
 

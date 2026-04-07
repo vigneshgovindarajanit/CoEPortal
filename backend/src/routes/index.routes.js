@@ -9,12 +9,10 @@ const allocationRoutes = require('../modules/allocation/allocation.routes')
 const examScheduleRoutes = require('../modules/examSchedule/examSchedule.routes')
 const dashboardRoutes = require('../modules/dashboard/dashboard.routes')
 const seatingFilterRoutes = require('../modules/seatingFilter/seatingFilter.routes')
-const authenticateRequest = require('../middleware/auth.middleware')
 
 const router = express.Router()
 
 router.use('/auth', authRoutes)
-router.use(authenticateRequest)
 router.use('/halls', hallRoutes)
 router.use('/faculty', facultyRoutes)
 router.use('/students', studentRoutes)

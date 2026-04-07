@@ -66,8 +66,8 @@ async function autoAssignSupervisor(payload = {}) {
   return facultyRepository.autoAssignSupervisor(payload)
 }
 
-async function autoAssignAllSupervisors() {
-  return facultyRepository.autoAssignAllLatestAllocation()
+async function autoAssignAllSupervisors(payload = {}) {
+  return facultyRepository.autoAssignAllLatestAllocation(payload)
 }
 
 async function getLatestAssignments() {

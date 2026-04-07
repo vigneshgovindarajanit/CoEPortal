@@ -179,6 +179,35 @@ async function getSummary() {
   }
 }
 
+async function getStrengthByYearAndDepartment(year, department = '') {
+  await initSchema()
+
+  const normalizedDepartment = String(department || '').trim().toUpperCase()
+  const params = [Number(year)]
+  let whereSql = 'WHERE year = ?'
+
+  if (normalizedDepartment && normalizedDepartment !== 'ALL') {
+    whereSql += ' AND dept = ?'
+    params.push(normalizedDepartment)
+  }
+
+  const [rows] = await db.query(
+    `
+      SELECT dept, COUNT(*) AS total
+      FROM students
+      ${whereSql}
+      GROUP BY dept
+      ORDER BY dept ASC
+    `,
+    params
+  )
+
+  return rows.reduce((acc, row) => {
+    acc[String(row.dept || '').toUpperCase()] = Number(row.total || 0)
+    return acc
+  }, {})
+}
+
 async function findById(id) {
   await initSchema()
   const [rows] = await db.query(
@@ -311,6 +340,7 @@ async function deleteById(id) {
 module.exports = {
   getAll,
   getSummary,
+  getStrengthByYearAndDepartment,
   findById,
   findByStudentId,
   findByEmail,

@@ -5,8 +5,8 @@ export async function generateAllocation(payload) {
   return response.data
 }
 
-export async function fetchLatestAllocation() {
-  const response = await api.get('/allocations/latest')
+export async function fetchLatestAllocation(params = {}) {
+  const response = await api.get('/allocations/latest', { params })
   return response.data
 }
 

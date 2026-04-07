@@ -11,7 +11,9 @@ async function generateAllocation(req, res, next) {
 
 async function getLatestAllocation(req, res, next) {
   try {
-    const data = await allocationService.getLatestAllocation()
+    const data = await allocationService.getLatestAllocation({
+      examType: req.query.examType
+    })
     if (!data) {
       res.status(404).json({ error: 'No seating allocation found' })
       return

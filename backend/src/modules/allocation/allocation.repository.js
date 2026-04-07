@@ -1,4 +1,5 @@
 const db = require('../../config/db')
+const { calculateCapacity } = require('../hall/hall.model')
 
 let initPromise
 
@@ -62,6 +63,12 @@ async function initSchema() {
       if (!(await hasColumn('exam_allocations', 'session_name'))) {
         await db.query(
           'ALTER TABLE exam_allocations ADD COLUMN session_name VARCHAR(20) NULL AFTER exam_date'
+        )
+      }
+
+      if (!(await hasColumn('exam_allocations', 'exam_type'))) {
+        await db.query(
+          "ALTER TABLE exam_allocations ADD COLUMN exam_type VARCHAR(30) NOT NULL DEFAULT 'SEMESTER' AFTER session_name"
         )
       }
 
@@ -225,7 +232,13 @@ async function listActiveHalls(examType) {
     rows: Number(row.seat_rows || 0),
     cols: Number(row.seat_cols || 0),
     studentsPerBench: Number(row.students_per_bench || 1),
-    examType: row.exam_type || 'SEMESTER'
+    examType: row.exam_type || 'SEMESTER',
+    capacity: calculateCapacity(
+      Number(row.seat_rows || 0),
+      Number(row.seat_cols || 0),
+      Number(row.students_per_bench || 1),
+      row.exam_type || 'SEMESTER'
+    )
   }))
 
   if (examType === 'PRACTICAL') {
@@ -332,10 +345,10 @@ async function createAllocationSnapshot(payload) {
 
     const [allocationResult] = await connection.query(
       `
-        INSERT INTO exam_allocations (year_filter, primary_dept, secondary_dept)
-        VALUES (?, ?, ?)
+        INSERT INTO exam_allocations (year_filter, primary_dept, secondary_dept, exam_type)
+        VALUES (?, ?, ?, ?)
       `,
-      [payload.yearFilter, payload.primaryDept || null, payload.secondaryDept || null]
+      [payload.yearFilter, payload.primaryDept || null, payload.secondaryDept || null, payload.examType || 'SEMESTER']
     )
 
     const allocationId = Number(allocationResult.insertId)
@@ -412,7 +425,7 @@ async function findAllocationById(allocationId) {
 
   const [allocationRows] = await db.query(
     `
-      SELECT id, year_filter, primary_dept, secondary_dept, exam_date, session_name, created_at
+      SELECT id, year_filter, primary_dept, secondary_dept, exam_date, session_name, exam_type, created_at
       FROM exam_allocations
       WHERE id = ?
       LIMIT 1
@@ -495,6 +508,7 @@ async function findAllocationById(allocationId) {
     secondaryDept: allocation.secondary_dept || '',
     examDate: allocation.exam_date || null,
     sessionName: allocation.session_name || '',
+    examType: allocation.exam_type || 'SEMESTER',
     createdAt: allocation.created_at,
     hallLayouts: hallRows.map((hallRow) => {
       const mapped = mapHallRow(hallRow)
@@ -516,15 +530,28 @@ async function findAllocationById(allocationId) {
   }
 }
 
-async function findLatestAllocation() {
+async function findLatestAllocation(examType = '') {
   await initSchema()
+  const normalizedExamType = String(examType || '').trim().toUpperCase()
+  const where = []
+  const params = []
+
+  if (normalizedExamType) {
+    where.push('exam_type = ?')
+    params.push(normalizedExamType)
+  }
+
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+
   const [rows] = await db.query(
     `
       SELECT id
       FROM exam_allocations
+      ${whereSql}
       ORDER BY id DESC
       LIMIT 1
-    `
+    `,
+    params
   )
 
   const allocationId = Number(rows[0]?.id || 0)

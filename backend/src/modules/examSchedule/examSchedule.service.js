@@ -7,7 +7,8 @@ const {
   validateScheduleInput
 } = require('./examSchedule.model')
 const courseRepository = require('../course/course.repository')
-const hallRepository = require('../hall/hall.repository')
+const allocationRepository = require('../allocation/allocation.repository')
+const studentRepository = require('../student/student.repository')
 
 function normalizeGeneratorInput(payload = {}) {
   return {
@@ -96,6 +97,12 @@ function addDays(dateText, daysToAdd) {
   return `${yyyy}-${mm}-${dd}`
 }
 
+function isSunday(dateText) {
+  const [year, month, day] = String(dateText).split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return date.getUTCDay() === 0
+}
+
 function createSeededRandom(seedText) {
   let seed = 0
   for (let index = 0; index < String(seedText).length; index += 1) {
@@ -124,6 +131,14 @@ function shuffleWithSeed(items, seedText) {
 }
 
 function normalizeCourseGroupKey(course = {}) {
+  const courseCode = String(course.courseCode || '')
+    .trim()
+    .toUpperCase()
+
+  if (courseCode) {
+    return courseCode
+  }
+
   return String(course.courseName || '')
     .trim()
     .toUpperCase()
@@ -137,7 +152,9 @@ function getDateRange(startDate, endDate) {
 
   while (true) {
     const current = addDays(startDate, index)
-    dates.push(current)
+    if (!isSunday(current)) {
+      dates.push(current)
+    }
     if (current >= lastDate) {
       break
     }
@@ -195,9 +212,200 @@ function compareSchedulesByDateAsc(left, right) {
   return String(left?.courseCode || '').localeCompare(String(right?.courseCode || ''))
 }
 
+function getDayDifference(startDate, endDate) {
+  const [startYear, startMonth, startDay] = String(startDate).split('-').map(Number)
+  const [endYear, endMonth, endDay] = String(endDate).split('-').map(Number)
+  const start = Date.UTC(startYear, startMonth - 1, startDay)
+  const end = Date.UTC(endYear, endMonth - 1, endDay)
+  return Math.round((end - start) / 86400000)
+}
+
+function canUseExamDateWithStudyLeave(usedDates = new Set(), examDate) {
+  const orderedDates = [...usedDates].sort((left, right) => left.localeCompare(right))
+
+  if (orderedDates.length === 0) {
+    return true
+  }
+
+  const previousDate = orderedDates.filter((date) => date < examDate).pop() || null
+  const nextDate = orderedDates.find((date) => date > examDate) || null
+
+  if (previousDate) {
+    const gapFromPreviousExam = getDayDifference(previousDate, examDate)
+    if (gapFromPreviousExam < 2 || gapFromPreviousExam > 4) {
+      return false
+    }
+  }
+
+  if (nextDate) {
+    const gapToNextExam = getDayDifference(examDate, nextDate)
+    if (gapToNextExam < 2 || gapToNextExam > 4) {
+      return false
+    }
+  }
+
+  return true
+}
+
+function getPreferredWindowOrder(slotWindows = [], targetDate) {
+  return [...slotWindows].sort((left, right) => {
+    const leftDistance = Math.abs(getDayDifference(left.examDate, targetDate))
+    const rightDistance = Math.abs(getDayDifference(right.examDate, targetDate))
+
+    if (leftDistance !== rightDistance) {
+      return leftDistance - rightDistance
+    }
+
+    if (left.examDate !== right.examDate) {
+      return left.examDate.localeCompare(right.examDate)
+    }
+
+    return String(left.sessionName || '').localeCompare(String(right.sessionName || ''))
+  })
+}
+
+function doesAllocationMatchYear(allocation, year) {
+  const yearFilter = String(allocation?.yearFilter || '').trim().toUpperCase()
+  if (!yearFilter || yearFilter === 'ALL') {
+    return true
+  }
+
+  return yearFilter
+    .split(',')
+    .map((value) => Number(value))
+    .some((value) => Number(value) === Number(year))
+}
+
+function getHallDepartmentLabelFromLayout(layout = {}) {
+  const directDepartments = []
+
+  for (const row of layout?.rows || []) {
+    const dept = String(row?.dept || '')
+      .trim()
+      .toUpperCase()
+
+    if (dept && dept !== '-' && !directDepartments.includes(dept)) {
+      directDepartments.push(dept)
+    }
+  }
+
+  if (directDepartments.length > 0) {
+    return directDepartments.slice(0, 2).join(', ')
+  }
+
+  const derivedDepartments = []
+
+  for (const row of layout?.rows || []) {
+    for (const rollNo of row?.rollNumbers || []) {
+      const dept = String(rollNo || '')
+        .replace(/[^A-Za-z]/g, '')
+        .trim()
+        .toUpperCase()
+
+      if (dept && !derivedDepartments.includes(dept)) {
+        derivedDepartments.push(dept)
+      }
+    }
+  }
+
+  if (derivedDepartments.length > 0) {
+    return derivedDepartments.slice(0, 2).join(', ')
+  }
+
+  return 'MIXED'
+}
+
+async function getScheduleHallPool(input) {
+  const latestAllocation = await allocationRepository.findLatestAllocation(input.examType)
+
+  if (latestAllocation?.hallLayouts?.length && doesAllocationMatchYear(latestAllocation, input.year)) {
+    const layoutHalls = latestAllocation.hallLayouts
+      .filter((layout) => Number(layout?.assignedCount || 0) > 0)
+      .map((layout) => ({
+        hallCode: String(layout?.hall?.hallCode || '').trim().toUpperCase(),
+        capacity: Number(layout?.assignedCount || 0),
+        departmentLabel: getHallDepartmentLabelFromLayout(layout)
+      }))
+      .filter((hall) => hall.hallCode && hall.capacity > 0)
+
+    if (layoutHalls.length > 0) {
+      return {
+        halls: layoutHalls,
+        source: 'seating'
+      }
+    }
+  }
+
+  const activeHalls = await allocationRepository.listActiveHalls(input.examType)
+  return {
+    halls: activeHalls.map((hall) => ({
+      hallCode: String(hall.hallCode || '').trim().toUpperCase(),
+      capacity: Number(hall.capacity || 0),
+      departmentLabel: String(input.department || '').trim().toUpperCase() || 'ALL'
+    })),
+    source: 'hall'
+  }
+}
+
+function getEffectiveCourseDemand(course, strengthByDepartment = {}) {
+  const declaredCount = Math.max(Number(course?.courseCount || 0), 0)
+  const courseDepartment = String(course?.department || '').trim().toUpperCase()
+
+  if (!courseDepartment || courseDepartment === 'ALL') {
+    return declaredCount
+  }
+
+  return Math.max(declaredCount, Number(strengthByDepartment[courseDepartment] || 0))
+}
+
+function allocateHallsForDemand(halls = [], requiredCapacity) {
+  const sortedHalls = [...halls].sort((left, right) => Number(right.capacity || 0) - Number(left.capacity || 0))
+  const selected = []
+  let remaining = Math.max(Number(requiredCapacity || 0), 0)
+
+  for (const hall of sortedHalls) {
+    if (remaining <= 0) {
+      break
+    }
+
+    selected.push(hall)
+    remaining -= Number(hall.capacity || 0)
+  }
+
+  if (remaining > 0) {
+    return null
+  }
+
+  return selected
+}
+
+function getGroupDemand(courseGroup, strengthByDepartment = {}) {
+  const seenDepartments = new Set()
+  let totalDemand = 0
+
+  for (const course of courseGroup.courses || []) {
+    const departmentKey = String(course.department || '').trim().toUpperCase()
+
+    if (!departmentKey || departmentKey === 'ALL') {
+      totalDemand += getEffectiveCourseDemand(course, strengthByDepartment)
+      continue
+    }
+
+    if (seenDepartments.has(departmentKey)) {
+      continue
+    }
+
+    seenDepartments.add(departmentKey)
+    totalDemand += getEffectiveCourseDemand(course, strengthByDepartment)
+  }
+
+  return Math.max(totalDemand, 0)
+}
+
 async function buildGeneratedSchedules(payload = {}) {
   const input = validateGeneratorInput(payload)
   const allCourses = await courseRepository.getAll()
+  const strengthByDepartment = await studentRepository.getStrengthByYearAndDepartment(input.year, input.department)
   const courses = allCourses.filter(
     (course) =>
       Number(course.courseYear) === input.year &&
@@ -218,15 +426,11 @@ async function buildGeneratedSchedules(payload = {}) {
     throw err
   }
 
-  const activeHalls = await hallRepository.findAllByStatus(true)
-  const hallsByType = activeHalls.filter(
-    (hall) => String(hall.examType || '').toUpperCase() === input.examType
-  )
-
-  const halls = hallsByType.length > 0 ? hallsByType : activeHalls
+  const hallPool = await getScheduleHallPool(input)
+  const halls = hallPool.halls
 
   if (halls.length === 0) {
-    const err = new Error(`No active halls available for ${input.examType}`)
+    const err = new Error(`No active ${input.examType} halls found`)
     err.status = 409
     throw err
   }
@@ -245,9 +449,25 @@ async function buildGeneratedSchedules(payload = {}) {
     selectedHalls = [preferredHall]
   }
 
+  const usableHalls = selectedHalls.filter((hall) => Number(hall.capacity || 0) > 0)
+  if (usableHalls.length === 0) {
+    const err = new Error(`No active ${input.examType} halls found with usable capacity`)
+    err.status = 409
+    throw err
+  }
+
+  selectedHalls = usableHalls
+
   const allowedSessions = getAllowedSessionsForExamType(input.examType)
   const sessionSequence = input.sessionName === 'BOTH' ? allowedSessions : [input.sessionName]
   const availableDates = getDateRange(input.startDate, input.endDate)
+
+  if (availableDates.length === 0) {
+    const err = new Error('No valid exam dates available in the selected range. Sundays are not allowed.')
+    err.status = 400
+    throw err
+  }
+
   const slotWindows = availableDates.flatMap((date) =>
     sessionSequence.map((sessionName) => ({
       examDate: date,
@@ -274,6 +494,13 @@ async function buildGeneratedSchedules(payload = {}) {
       hallCode: input.hallCode
     })
   )
+  const orderedWindows = [...shuffledWindows].sort((left, right) => {
+    if (left.examDate !== right.examDate) {
+      return left.examDate.localeCompare(right.examDate)
+    }
+
+    return String(left.sessionName || '').localeCompare(String(right.sessionName || ''))
+  })
 
   const courseGroups = Array.from(
     courses.reduce((map, course) => {
@@ -287,19 +514,28 @@ async function buildGeneratedSchedules(payload = {}) {
   )
     .map(([groupKey, groupCourses]) => ({
       groupKey,
-      courses: [...groupCourses].sort(
-        (left, right) => Number(right.courseCount || 0) - Number(left.courseCount || 0)
-      ),
-      totalDemand: groupCourses.reduce((sum, course) => sum + Number(course.courseCount || 0), 0)
+      courses: [...groupCourses].sort((left, right) => String(left.department || '').localeCompare(String(right.department || ''))),
+      representativeCourse: [...groupCourses].sort(
+        (left, right) => getEffectiveCourseDemand(right, strengthByDepartment) - getEffectiveCourseDemand(left, strengthByDepartment)
+      )[0],
+      totalDemand: getGroupDemand({ courses: groupCourses }, strengthByDepartment),
+      departments: [...new Set(groupCourses.map((course) => String(course.department || '').trim().toUpperCase()).filter(Boolean))]
     }))
     .sort((left, right) => right.totalDemand - left.totalDemand)
 
   const generatedRows = []
   const usedDatesByDepartment = new Map()
 
-  for (const courseGroup of courseGroups) {
-    const windowIndex = shuffledWindows.findIndex((window) => {
-      const groupDepartments = [...new Set(courseGroup.courses.map((course) => String(course.department || '').toUpperCase()))]
+  for (const [courseGroupIndex, courseGroup] of courseGroups.entries()) {
+    const targetDateIndex =
+      courseGroups.length <= 1
+        ? 0
+        : Math.round((courseGroupIndex * (availableDates.length - 1)) / (courseGroups.length - 1))
+    const targetDate = availableDates[Math.max(0, Math.min(targetDateIndex, availableDates.length - 1))]
+    const candidateWindows = getPreferredWindowOrder(orderedWindows, targetDate)
+
+    const selectedWindow = candidateWindows.find((window) => {
+      const groupDepartments = courseGroup.departments
 
       const hasDepartmentConflict = groupDepartments.some((department) => {
         const usedDates = usedDatesByDepartment.get(department)
@@ -310,21 +546,31 @@ async function buildGeneratedSchedules(payload = {}) {
         return false
       }
 
+      const violatesStudyLeave = groupDepartments.some((department) => {
+        const usedDates = usedDatesByDepartment.get(department) || new Set()
+        return !canUseExamDateWithStudyLeave(usedDates, window.examDate)
+      })
+
+      if (violatesStudyLeave) {
+        return false
+      }
+
       const hallsByCapacity = [...window.halls].sort(
         (left, right) => Number(right.capacity || 0) - Number(left.capacity || 0)
       )
 
-      if (hallsByCapacity.length < courseGroup.courses.length) {
+      const workingHalls = [...hallsByCapacity]
+      const allocatedHalls = allocateHallsForDemand(workingHalls, courseGroup.totalDemand)
+
+      if (!allocatedHalls) {
         return false
       }
 
-      return courseGroup.courses.every(
-        (course, index) => Number(hallsByCapacity[index]?.capacity || 0) >= Number(course.courseCount || 0)
-      )
+      return true
     })
 
-    if (windowIndex === -1) {
-      const maxCapacity = shuffledWindows.reduce(
+    if (!selectedWindow) {
+      const maxCapacity = orderedWindows.reduce(
         (highest, window) =>
           Math.max(
             highest,
@@ -332,46 +578,51 @@ async function buildGeneratedSchedules(payload = {}) {
           ),
         0
       )
+
+      if (maxCapacity <= 0) {
+        const err = new Error(`No active ${input.examType} halls found with usable capacity`)
+        err.status = 409
+        throw err
+      }
+
       const err = new Error(
-        `No common slot with enough seating capacity for ${courseGroup.courses
-          .map((course) => course.courseCode)
-          .join(', ')}. Available max hall capacity: ${maxCapacity}`
+        `Unable to place ${courseGroup.representativeCourse?.courseCode || courseGroup.groupKey} with the required hall capacity and at least 1 full day gap between exams (up to 3 leave days). Available max hall capacity: ${maxCapacity}`
       )
       err.status = 409
       throw err
     }
 
-    const selectedWindow = shuffledWindows[windowIndex]
     selectedWindow.halls.sort((left, right) => Number(right.capacity || 0) - Number(left.capacity || 0))
 
-    for (const course of courseGroup.courses) {
-      const requiredCapacity = Number(course.courseCount || 0)
-      const hallIndex = selectedWindow.halls.findIndex(
-        (hall) => Number(hall.capacity || 0) >= requiredCapacity
-      )
+    const allocatedHalls = allocateHallsForDemand(selectedWindow.halls, courseGroup.totalDemand)
 
-      if (hallIndex === -1) {
-        const err = new Error(`No hall with enough seating capacity for ${course.courseCode}`)
-        err.status = 409
-        throw err
+    if (!allocatedHalls) {
+      const err = new Error(`No hall set with enough seating capacity for ${courseGroup.representativeCourse?.courseCode || courseGroup.groupKey}`)
+      err.status = 409
+      throw err
+    }
+
+    for (const hall of allocatedHalls) {
+      const hallIndex = selectedWindow.halls.findIndex((item) => item.hallCode === hall.hallCode)
+      if (hallIndex >= 0) {
+        selectedWindow.halls.splice(hallIndex, 1)
       }
-
-      const [hall] = selectedWindow.halls.splice(hallIndex, 1)
 
       generatedRows.push(
         validateScheduleInput({
           examDate: selectedWindow.examDate,
           sessionName: selectedWindow.sessionName,
           examType: input.examType,
-          courseCode: course.courseCode,
-          courseName: course.courseName,
-          department: course.department,
-          year: course.courseYear,
+          courseCode: courseGroup.representativeCourse?.courseCode,
+          courseName: courseGroup.representativeCourse?.courseName,
+          department: hall.departmentLabel || courseGroup.departments.join('/'),
+          year: courseGroup.representativeCourse?.courseYear,
           hallCode: hall.hallCode
         })
       )
+    }
 
-      const departmentKey = String(course.department || '').toUpperCase()
+    for (const departmentKey of courseGroup.departments) {
       if (!usedDatesByDepartment.has(departmentKey)) {
         usedDatesByDepartment.set(departmentKey, new Set())
       }

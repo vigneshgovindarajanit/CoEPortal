@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import {
   Alert,
   Autocomplete,
@@ -72,10 +74,64 @@ function formatAssignmentDate(value) {
   return `${Number(day)}/${Number(month)}/${year}`
 }
 
+function getSessionTimeLabel(sessionName) {
+  const normalizedSession = String(sessionName || '').trim().toUpperCase()
+
+  if (!normalizedSession) {
+    return '-'
+  }
+
+  if (normalizedSession === 'AN') {
+    return '01:30 PM - 03:00 PM'
+  }
+
+  if (normalizedSession === 'FN') {
+    return '09:00 AM - 10:30 AM'
+  }
+
+  return normalizedSession
+}
+
+function getSessionSortWeight(sessionName) {
+  const normalizedSession = String(sessionName || '').trim().toUpperCase()
+  if (normalizedSession === 'FN') {
+    return 0
+  }
+  if (normalizedSession === 'AN') {
+    return 1
+  }
+  return 99
+}
+
+function compareSchedulesDesc(left, right) {
+  const leftDate = String(left?.examDate || '')
+  const rightDate = String(right?.examDate || '')
+  if (leftDate !== rightDate) {
+    return rightDate.localeCompare(leftDate)
+  }
+
+  const sessionDiff = getSessionSortWeight(left?.sessionName) - getSessionSortWeight(right?.sessionName)
+  if (sessionDiff !== 0) {
+    return sessionDiff
+  }
+
+  return String(left?.hallCode || '').localeCompare(String(right?.hallCode || ''))
+}
+
+function renderScheduleLabel(schedule) {
+  if (!schedule) {
+    return '-'
+  }
+
+  return `${formatAssignmentDate(schedule.examDate)} ${schedule.sessionName || '-'} ${getSessionTimeLabel(schedule.sessionName)}`.trim()
+}
+
 export default function FacultyPage() {
   const [faculty, setFaculty] = useState([])
   const [halls, setHalls] = useState([])
   const [sessions, setSessions] = useState(['FN', 'AN'])
+  const [examTypes, setExamTypes] = useState(['SEMESTER', 'PRACTICAL', 'PERIODIC_TEST'])
+  const [scheduleDates, setScheduleDates] = useState([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -91,12 +147,20 @@ export default function FacultyPage() {
   const [success, setSuccess] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [assignDialogOpen, setAssignDialogOpen] = useState(false)
+  const [assignAllDialogOpen, setAssignAllDialogOpen] = useState(false)
   const [editingFaculty, setEditingFaculty] = useState(null)
+  const [selectedFacultyDetails, setSelectedFacultyDetails] = useState(null)
   const [form, setForm] = useState(emptyForm)
   const [assignForm, setAssignForm] = useState({
     hallCode: '',
     examDate: '',
     sessionName: 'FN'
+  })
+  const [assignAllForm, setAssignAllForm] = useState({
+    startDate: '',
+    endDate: '',
+    sessionName: 'ALL',
+    examType: 'SEMESTER'
   })
 
   const hallOptions = useMemo(
@@ -116,9 +180,14 @@ export default function FacultyPage() {
     return hallOptions
   }, [allocationHallOptions, hallOptions])
 
+  const scheduledAssignments = useMemo(
+    () => latestAssignments.filter((item) => String(item.examDate || '').trim()),
+    [latestAssignments]
+  )
+
   const hallsByFacultyId = useMemo(() => {
     const map = new Map()
-    for (const item of latestAssignments) {
+    for (const item of scheduledAssignments) {
       if (!item.hallCode) {
         continue
       }
@@ -144,12 +213,12 @@ export default function FacultyPage() {
       result.set(key, Array.from(set))
     }
     return result
-  }, [latestAssignments, faculty])
+  }, [scheduledAssignments, faculty])
 
   const latestScheduleByFacultyId = useMemo(() => {
     const map = new Map()
 
-    for (const item of latestAssignments) {
+    for (const item of scheduledAssignments) {
       let targetId = item.facultyId
 
       if (!targetId && item.facultyName) {
@@ -176,8 +245,12 @@ export default function FacultyPage() {
       map.get(targetId).push(nextEntry)
     }
 
+    for (const entry of map.values()) {
+      entry.sort(compareSchedulesDesc)
+    }
+
     return map
-  }, [latestAssignments, faculty])
+  }, [scheduledAssignments, faculty])
 
   const historicalHallsByFacultyId = useMemo(() => {
     const map = new Map()
@@ -228,6 +301,53 @@ export default function FacultyPage() {
     }
   }, [faculty, hallsByFacultyId])
 
+  const exportRows = useMemo(() => {
+    const rows = []
+
+    for (const item of scheduledAssignments) {
+      const normalizedHallCode = String(item.hallCode || '').trim()
+      let facultyName = String(item.facultyName || '').trim()
+
+      if (!facultyName && item.facultyId) {
+        const matchedFaculty = faculty.find((member) => Number(member.id) === Number(item.facultyId))
+        facultyName = String(matchedFaculty?.fullName || '').trim()
+      }
+
+      if (!facultyName || !normalizedHallCode) {
+        continue
+      }
+
+      rows.push({
+        facultyName,
+        hallCode: normalizedHallCode,
+        examDate: item.examDate || '',
+        sessionName: item.sessionName || '-',
+        time: getSessionTimeLabel(item.sessionName)
+      })
+    }
+
+    return rows.sort((left, right) => {
+      const leftDate = String(left.examDate || '')
+      const rightDate = String(right.examDate || '')
+      if (leftDate !== rightDate) {
+        return leftDate.localeCompare(rightDate)
+      }
+
+      const leftSession = String(left.sessionName || '')
+      const rightSession = String(right.sessionName || '')
+      if (leftSession !== rightSession) {
+        return leftSession.localeCompare(rightSession)
+      }
+
+      const hallCompare = String(left.hallCode || '').localeCompare(String(right.hallCode || ''))
+      if (hallCompare !== 0) {
+        return hallCompare
+      }
+
+      return String(left.facultyName || '').localeCompare(String(right.facultyName || ''))
+    })
+  }, [faculty, scheduledAssignments])
+
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
@@ -265,6 +385,8 @@ export default function FacultyPage() {
           .sort((a, b) => a.localeCompare(b))
       )
       setSessions(scheduleFilters?.sessions?.length ? scheduleFilters.sessions : ['FN', 'AN'])
+      setExamTypes(scheduleFilters?.examTypes?.length ? scheduleFilters.examTypes : ['SEMESTER', 'PRACTICAL', 'PERIODIC_TEST'])
+      setScheduleDates(scheduleFilters?.dates?.length ? scheduleFilters.dates : [])
       setPracticalVenues(
         (practicalHallsData || [])
           .sort((a, b) => String(a.hallCode || '').localeCompare(String(b.hallCode || '')))
@@ -328,6 +450,38 @@ export default function FacultyPage() {
     })
   }
 
+  function openAssignAllDialog() {
+    const sortedDates = [...scheduleDates].sort((left, right) => String(left).localeCompare(String(right)))
+    setAssignAllForm({
+      startDate: sortedDates[0] || '',
+      endDate: sortedDates[sortedDates.length - 1] || sortedDates[0] || '',
+      sessionName: 'ALL',
+      examType: examTypes[0] || 'SEMESTER'
+    })
+    setAssignAllDialogOpen(true)
+  }
+
+  function closeAssignAllDialog() {
+    setAssignAllDialogOpen(false)
+    setAssignAllForm({
+      startDate: '',
+      endDate: '',
+      sessionName: 'ALL',
+      examType: 'SEMESTER'
+    })
+  }
+
+  function openFacultyDetails(item, schedules) {
+    setSelectedFacultyDetails({
+      faculty: item,
+      schedules: schedules || []
+    })
+  }
+
+  function closeFacultyDetails() {
+    setSelectedFacultyDetails(null)
+  }
+
   function onFormChange(field) {
     return (event) => {
       const value = event.target.value
@@ -369,6 +523,12 @@ export default function FacultyPage() {
     }
   }
 
+  function onAssignAllChange(field) {
+    return (event) => {
+      setAssignAllForm((prev) => ({ ...prev, [field]: event.target.value }))
+    }
+  }
+
   async function runAutoAssign() {
     setAssigning(true)
     setError('')
@@ -396,9 +556,15 @@ export default function FacultyPage() {
     setError('')
     setSuccess('')
     try {
-      const result = await autoAssignAllFaculty()
+      const result = await autoAssignAllFaculty({
+        startDate: assignAllForm.startDate || undefined,
+        endDate: assignAllForm.endDate || undefined,
+        sessionName: assignAllForm.sessionName || undefined,
+        examType: assignAllForm.examType || undefined
+      })
+      closeAssignAllDialog()
       setSuccess(
-        `Auto assign all completed. Assigned: ${result.assignedCount}, Skipped: ${result.skippedCount}.`
+        `Auto assign all completed for ${assignAllForm.examType} ${formatAssignmentDate(result.startDate)} to ${formatAssignmentDate(result.endDate)} ${result.sessionName}. Assigned: ${result.assignedCount}, Skipped: ${result.skippedCount}.`
       )
       await loadData()
     } catch (err) {
@@ -446,15 +612,66 @@ export default function FacultyPage() {
     }
   }
 
+  function exportAssignedFacultyPdf() {
+    if (exportRows.length === 0) {
+      setError('No assigned faculty records available to export.')
+      return
+    }
+
+    setError('')
+
+    const doc = new jsPDF({
+      orientation: 'landscape',
+      unit: 'mm',
+      format: 'a4'
+    })
+
+    doc.setFontSize(16)
+    doc.text('Assigned Faculty Details', 14, 16)
+    doc.setFontSize(10)
+    doc.text(`Generated on: ${new Date().toLocaleString('en-IN')}`, 14, 23)
+
+    autoTable(doc, {
+      startY: 28,
+      head: [['Faculty Name', 'Exam Hall', 'Date', 'Session', 'Time']],
+      body: exportRows.map((row) => [
+        row.facultyName,
+        row.hallCode,
+        formatAssignmentDate(row.examDate),
+        row.sessionName || '-',
+        row.time
+      ]),
+      styles: {
+        fontSize: 10,
+        cellPadding: 3
+      },
+      headStyles: {
+        fillColor: [25, 118, 210]
+      }
+    })
+
+    const today = new Date().toISOString().split('T')[0]
+    doc.save(`assigned-faculty-${today}.pdf`)
+  }
+
   return (
     <Box className="app-shell">
       <Box className="page-head">
         <Typography variant="h4" className="brand-title">
           Faculty Workload & Supervisor Assignment
         </Typography>
-        <Button variant="contained" onClick={openCreateDialog}>
-          Add Faculty
-        </Button>
+        <Stack direction="row" spacing={1.5}>
+          <Button
+            variant="outlined"
+            onClick={exportAssignedFacultyPdf}
+            disabled={exportRows.length === 0}
+          >
+            Export PDF
+          </Button>
+          <Button variant="contained" onClick={openCreateDialog}>
+            Add Faculty
+          </Button>
+        </Stack>
       </Box>
 
       <Box className="stats-row hall-stats-row">
@@ -525,7 +742,7 @@ export default function FacultyPage() {
             <Button
               variant="contained"
               color="secondary"
-              onClick={runAutoAssignAll}
+              onClick={openAssignAllDialog}
               disabled={assigningAll}
               size="small"
               className="faculty-compact-action"
@@ -573,10 +790,21 @@ export default function FacultyPage() {
           const progress = item.maxWorkload
             ? Math.min((item.currentWorkload / item.maxWorkload) * 100, 100)
             : 0
-          const assignedHalls = hallsByFacultyId.get(item.id) || []
           const assignedSchedules = latestScheduleByFacultyId.get(item.id) || []
+          const latestSchedule = assignedSchedules[0] || null
           return (
-            <Card className="hall-card faculty-card" key={item.id}>
+            <Card
+              className="hall-card faculty-card"
+              key={item.id}
+              sx={{
+                cursor: assignedSchedules.length > 0 ? 'pointer' : 'default'
+              }}
+              onClick={() => {
+                if (assignedSchedules.length > 0) {
+                  openFacultyDetails(item, assignedSchedules)
+                }
+              }}
+            >
               <CardContent className="faculty-card-content">
                 <Stack direction="row" justifyContent="space-between" alignItems="center">
                   <Typography variant="h6">{item.fullName}</Typography>
@@ -587,22 +815,15 @@ export default function FacultyPage() {
                   />
                 </Stack>
                 <Typography variant="body2" className="faculty-meta faculty-assigned-halls">
-                  <span className="faculty-meta-label">Assigned hall:</span>{' '}
+                  <span className="faculty-meta-label">Recent assigned hall:</span>{' '}
                   <span className="faculty-meta-value">
-                    {assignedHalls.length > 0 ? assignedHalls.join(', ') : '-'}
+                    {latestSchedule?.hallCode || '-'}
                   </span>
                 </Typography>
                 <Typography variant="body2" className="faculty-meta">
-                  <span className="faculty-meta-label">Schedule:</span>{' '}
+                  <span className="faculty-meta-label">Recent schedule:</span>{' '}
                   <span className="faculty-meta-value">
-                    {assignedSchedules.length > 0
-                      ? assignedSchedules
-                          .map(
-                            (schedule) =>
-                              `${schedule.hallCode} ${formatAssignmentDate(schedule.examDate)} ${schedule.sessionName}`.trim()
-                          )
-                          .join(', ')
-                      : '-'}
+                    {latestSchedule ? renderScheduleLabel(latestSchedule) : '-'}
                   </span>
                 </Typography>
 
@@ -629,7 +850,10 @@ export default function FacultyPage() {
                   <Button
                     size="small"
                     variant="outlined"
-                    onClick={() => openEditDialog(item)}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      openEditDialog(item)
+                    }}
                     sx={{
                       color: '#7b1fa2',
                       borderColor: '#7b1fa2',
@@ -644,7 +868,10 @@ export default function FacultyPage() {
                   <Button
                     size="small"
                     variant="outlined"
-                    onClick={() => runCancelAssignment(item.id)}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      runCancelAssignment(item.id)
+                    }}
                     disabled={Number(item.currentWorkload || 0) === 0 || cancellingId === item.id}
                     sx={{
                       color: '#d32f2f',
@@ -798,6 +1025,171 @@ export default function FacultyPage() {
             disabled={assigning || !assignForm.hallCode || !assignForm.examDate || !assignForm.sessionName}
           >
             {assigning ? 'Assigning...' : 'Assign'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={assignAllDialogOpen} onClose={closeAssignAllDialog} fullWidth maxWidth="sm">
+        <DialogTitle>Assign All Halls</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <FormControl fullWidth>
+              <InputLabel id="assign-all-exam-type-label">Exam Type</InputLabel>
+              <Select
+                labelId="assign-all-exam-type-label"
+                value={assignAllForm.examType}
+                label="Exam Type"
+                onChange={onAssignAllChange('examType')}
+              >
+                {examTypes.map((examType) => (
+                  <MenuItem key={examType} value={examType}>
+                    {examType === 'PERIODIC_TEST' ? 'PT' : examType === 'SEMESTER' ? 'SEM' : 'PRACTICAL'}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <TextField
+              type="date"
+              label="Start Date"
+              value={assignAllForm.startDate}
+              onChange={onAssignAllChange('startDate')}
+              InputLabelProps={{ shrink: true }}
+              fullWidth
+            />
+            <TextField
+              type="date"
+              label="End Date"
+              value={assignAllForm.endDate}
+              onChange={onAssignAllChange('endDate')}
+              InputLabelProps={{ shrink: true }}
+              fullWidth
+            />
+            <FormControl fullWidth>
+              <InputLabel id="assign-all-session-label">Session</InputLabel>
+              <Select
+                labelId="assign-all-session-label"
+                value={assignAllForm.sessionName}
+                label="Session"
+                onChange={onAssignAllChange('sessionName')}
+              >
+                <MenuItem value="ALL">All Sessions</MenuItem>
+                {sessions.map((session) => (
+                  <MenuItem key={session} value={session}>
+                    {session}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeAssignAllDialog} variant="contained" color="error">
+            Cancel
+          </Button>
+            <Button
+              onClick={runAutoAssignAll}
+              variant="contained"
+              disabled={assigningAll || !assignAllForm.startDate || !assignAllForm.endDate || !assignAllForm.sessionName || !assignAllForm.examType}
+            >
+              {assigningAll ? 'Assigning All...' : 'Assign All'}
+            </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(selectedFacultyDetails)} onClose={closeFacultyDetails} fullWidth maxWidth="md">
+        <DialogTitle>
+          {selectedFacultyDetails?.faculty?.fullName || 'Faculty Assignment Details'}
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <Card variant="outlined">
+              <CardContent>
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                  <Typography variant="body2" className="faculty-meta">
+                    <span className="faculty-meta-label">Department:</span>{' '}
+                    <span className="faculty-meta-value">{selectedFacultyDetails?.faculty?.department || '-'}</span>
+                  </Typography>
+                  <Typography variant="body2" className="faculty-meta">
+                    <span className="faculty-meta-label">Role:</span>{' '}
+                    <span className="faculty-meta-value">{selectedFacultyDetails?.faculty?.role || '-'}</span>
+                  </Typography>
+                  <Typography variant="body2" className="faculty-meta">
+                    <span className="faculty-meta-label">Workload:</span>{' '}
+                    <span className="faculty-meta-value">
+                      {selectedFacultyDetails?.faculty
+                        ? `${selectedFacultyDetails.faculty.currentWorkload}/${selectedFacultyDetails.faculty.maxWorkload}`
+                        : '-'}
+                    </span>
+                  </Typography>
+                </Stack>
+              </CardContent>
+            </Card>
+
+            <Box
+              sx={{
+                border: '1px solid #d7deea',
+                borderRadius: 2,
+                overflow: 'hidden'
+              }}
+            >
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: { xs: '1.1fr 1fr', sm: '1.2fr 1fr 0.8fr 1.2fr' },
+                  gap: 0,
+                  backgroundColor: '#eef4ff',
+                  borderBottom: '1px solid #d7deea',
+                  fontWeight: 700
+                }}
+              >
+                <Box sx={{ px: 2, py: 1.5 }}>Exam Hall</Box>
+                <Box sx={{ px: 2, py: 1.5 }}>Date</Box>
+                <Box sx={{ px: 2, py: 1.5, display: { xs: 'none', sm: 'block' } }}>Session</Box>
+                <Box sx={{ px: 2, py: 1.5, display: { xs: 'none', sm: 'block' } }}>Time</Box>
+              </Box>
+
+              {(selectedFacultyDetails?.schedules || []).length > 0 ? (
+                selectedFacultyDetails.schedules.map((schedule, index) => (
+                  <Box
+                    key={`${schedule.hallCode}-${schedule.examDate}-${schedule.sessionName}-${index}`}
+                    sx={{
+                      display: 'grid',
+                      gridTemplateColumns: { xs: '1.1fr 1fr', sm: '1.2fr 1fr 0.8fr 1.2fr' },
+                      borderBottom:
+                        index === selectedFacultyDetails.schedules.length - 1 ? 'none' : '1px solid #edf1f7',
+                      backgroundColor: index % 2 === 0 ? '#ffffff' : '#fafcff'
+                    }}
+                  >
+                    <Box sx={{ px: 2, py: 1.5 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {schedule.hallCode || '-'}
+                      </Typography>
+                      <Typography variant="caption" sx={{ display: { xs: 'block', sm: 'none' }, color: '#4b5563' }}>
+                        {schedule.sessionName || '-'} | {getSessionTimeLabel(schedule.sessionName)}
+                      </Typography>
+                    </Box>
+                    <Box sx={{ px: 2, py: 1.5 }}>
+                      <Typography variant="body2">{formatAssignmentDate(schedule.examDate)}</Typography>
+                    </Box>
+                    <Box sx={{ px: 2, py: 1.5, display: { xs: 'none', sm: 'block' } }}>
+                      <Typography variant="body2">{schedule.sessionName || '-'}</Typography>
+                    </Box>
+                    <Box sx={{ px: 2, py: 1.5, display: { xs: 'none', sm: 'block' } }}>
+                      <Typography variant="body2">{getSessionTimeLabel(schedule.sessionName)}</Typography>
+                    </Box>
+                  </Box>
+                ))
+              ) : (
+                <Box sx={{ px: 2, py: 2 }}>
+                  <Typography variant="body2">No assigned schedules available.</Typography>
+                </Box>
+              )}
+            </Box>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeFacultyDetails} variant="contained">
+            Close
           </Button>
         </DialogActions>
       </Dialog>

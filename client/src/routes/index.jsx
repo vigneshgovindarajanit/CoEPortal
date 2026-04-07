@@ -1,7 +1,6 @@
 import { Suspense, lazy } from 'react'
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import ApartmentRoundedIcon from '@mui/icons-material/ApartmentRounded'
-import AssignmentTurnedInRoundedIcon from '@mui/icons-material/AssignmentTurnedInRounded'
 import BadgeRoundedIcon from '@mui/icons-material/BadgeRounded'
 import CodeRoundedIcon from '@mui/icons-material/CodeRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
@@ -20,7 +19,6 @@ const StudentsPage = lazy(() => import('../pages/Students'))
 const SeatingPage = lazy(() => import('../pages/Seating'))
 const ExamSchedulePage = lazy(() => import('../pages/ExamSchedule'))
 const CoursePage = lazy(() => import('../pages/Course'))
-const CourseRegistrationPage = lazy(() => import('../pages/CourseRegistration'))
 const LoginPage = lazy(() => import('../pages/Login'))
 const LogoutPage = lazy(() => import('../pages/Logout'))
 const ErrorPage = lazy(() => import('../pages/Error'))
@@ -31,11 +29,6 @@ const NAV_ITEMS = [
   { to: '/faculty', label: 'Faculty', icon: <BadgeRoundedIcon fontSize="small" /> },
   { to: '/students', label: 'Students', icon: <SchoolRoundedIcon fontSize="small" /> },
   { to: '/courses', label: 'Courses', icon: <MenuBookRoundedIcon fontSize="small" /> },
-  {
-    to: '/course-registrations',
-    label: 'Course Registration',
-    icon: <AssignmentTurnedInRoundedIcon fontSize="small" />
-  },
   { to: '/seating', label: 'Seating', icon: <CodeRoundedIcon fontSize="small" /> },
   { to: '/exam-schedule', label: 'Exam Schedule', icon: <EventNoteRoundedIcon fontSize="small" /> },
   { to: '/logout', label: 'Logout', icon: <LogoutRoundedIcon fontSize="small" /> }
@@ -88,7 +81,6 @@ export default function AppRoutes() {
             <Route path="/faculty" element={<FacultyPage />} />
             <Route path="/students" element={<StudentsPage />} />
             <Route path="/courses" element={<CoursePage />} />
-            <Route path="/course-registrations" element={<CourseRegistrationPage />} />
             <Route path="/seating" element={<SeatingPage />} />
             <Route path="/exam-schedule" element={<ExamSchedulePage />} />
           </Route>

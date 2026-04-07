@@ -29,12 +29,14 @@ import api from '../lib/api'
 import { confirmAction } from '../utils/confirmAction'
 
 const BLOCK_OPTIONS = ['EW', 'WW', 'ME', 'SF', 'AE', 'MH']
+const REGULAR_HALL_BLOCK_ORDER = ['EW', 'WW', 'ME', 'SF', 'AE', 'MH']
 const STUDENTS_PER_BENCH_OPTIONS = [1, 2]
 const EXAM_TYPE_OPTIONS = [
   { label: 'Periodic Test', value: 'PERIODIC_TEST' },
   { label: 'Semester', value: 'SEMESTER' },
   { label: 'Practical', value: 'PRACTICAL' }
 ]
+const HALL_EXAM_TYPE_OPTIONS = EXAM_TYPE_OPTIONS
 const PRACTICAL_VENUE_RULES = [
   { prefix: 'IT LAB', min: 1, max: 5 },
   { prefix: 'CSE LAB', min: 1, max: 5 },
@@ -98,6 +100,11 @@ function getExamTypeLabel(examType) {
   return EXAM_TYPE_OPTIONS.find((item) => item.value === examType)?.label || examType
 }
 
+function getHallExamType(examType) {
+  const normalizedExamType = String(examType || 'SEMESTER').toUpperCase()
+  return normalizedExamType === 'PRACTICAL' ? 'PRACTICAL' : 'SEMESTER'
+}
+
 function normalizeHallName(value) {
   return String(value || '')
     .toUpperCase()
@@ -132,15 +139,19 @@ function isPracticalOnlyHall(hall) {
 }
 
 function normalizeHall(hall) {
+  const hallCode = hall.hallCode ?? hall.hall_code
+  const normalizedExamType = getHallExamType(hall.examType ?? hall.exam_type ?? 'SEMESTER')
+  const derivedExamType = isAllowedPracticalVenue(hallCode) ? 'PRACTICAL' : normalizedExamType
+
   return {
     ...hall,
     block: hall.block ?? hall.block_name,
     number: hall.number ?? hall.hall_number,
     rows: hall.rows ?? hall.seat_rows,
     cols: hall.cols ?? hall.seat_cols,
-    hallCode: hall.hallCode ?? hall.hall_code,
+    hallCode,
     studentsPerBench: hall.studentsPerBench ?? hall.students_per_bench,
-    examType: hall.examType ?? hall.exam_type ?? 'SEMESTER',
+    examType: derivedExamType,
     isActive: hall.isActive ?? Boolean(hall.is_active)
   }
 }
@@ -168,10 +179,15 @@ export default function Hall() {
   )
 
   const visibleHalls = useMemo(() => {
-    if (globalExamType !== 'PRACTICAL') {
-      return halls
+    if (globalExamType === 'PRACTICAL') {
+      return halls.filter((hall) => isPracticalOnlyHall(hall))
     }
-    return halls.filter((hall) => isPracticalOnlyHall(hall))
+
+    return halls.filter(
+      (hall) =>
+        !isPracticalOnlyHall(hall) &&
+        getHallExamType(hall.examType || 'SEMESTER') === globalExamType
+    )
   }, [globalExamType, halls])
 
   const isPracticalView = globalExamType === 'PRACTICAL'
@@ -182,19 +198,29 @@ export default function Hall() {
     }
 
     return visibleHalls.map((hall) => {
-      const studentsPerBench = getDefaultStudentsPerBenchByExamType(globalExamType)
-      const capacity = calculateCapacity(hall.rows, hall.cols, studentsPerBench, globalExamType)
+      const normalizedExamType = getHallExamType(hall.examType || 'SEMESTER')
+      const studentsPerBench = getDefaultStudentsPerBenchByExamType(normalizedExamType)
+      const capacity = calculateCapacity(hall.rows, hall.cols, studentsPerBench, normalizedExamType)
       const supervisors = (hall.block === 'SF' || hall.block === 'ME' || capacity >= 45) ? 2 : 1
 
       return {
         ...hall,
-        examType: globalExamType,
+        examType: normalizedExamType,
         studentsPerBench,
         capacity,
         supervisors
       }
     })
-  }, [globalExamType, isPracticalView, visibleHalls])
+  }, [isPracticalView, visibleHalls])
+
+  const groupedDisplayedHalls = useMemo(
+    () =>
+      REGULAR_HALL_BLOCK_ORDER.map((block) => ({
+        title: block,
+        items: displayedHalls.filter((hall) => String(hall.block || '').toUpperCase() === block)
+      })).filter((group) => group.items.length > 0),
+    [displayedHalls]
+  )
 
   const practicalHallLookup = useMemo(() => {
     const map = new Map()
@@ -334,7 +360,7 @@ export default function Hall() {
       rows: hall.rows,
       cols: hall.cols,
       studentsPerBench: hall.studentsPerBench,
-      examType: hall.examType || 'SEMESTER'
+      examType: getHallExamType(hall.examType || 'SEMESTER')
     })
     setDialogOpen(true)
   }
@@ -384,7 +410,7 @@ export default function Hall() {
       }
 
       closeDialog()
-      await fetchHalls(search)
+      await fetchHalls(isPracticalView ? '' : search)
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to save hall')
     } finally {
@@ -396,7 +422,7 @@ export default function Hall() {
     setError('')
     try {
       await api.patch(`/halls/${hall.id}/status`, { isActive: !hall.isActive })
-      await fetchHalls(search)
+      await fetchHalls(isPracticalView ? '' : search)
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to update hall status')
     }
@@ -409,7 +435,7 @@ export default function Hall() {
     setError('')
     try {
       await api.delete(`/halls/${id}`)
-      await fetchHalls(search)
+      await fetchHalls(isPracticalView ? '' : search)
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to delete hall')
     }
@@ -468,7 +494,7 @@ export default function Hall() {
               onChange={(event) => setGlobalExamType(event.target.value)}
               disabled={loading}
             >
-              {EXAM_TYPE_OPTIONS.map((item) => (
+              {HALL_EXAM_TYPE_OPTIONS.map((item) => (
                 <MenuItem key={item.value} value={item.value}>
                   {item.label}
                 </MenuItem>
@@ -620,110 +646,117 @@ export default function Hall() {
           ))}
         </Box>
       ) : (
-      <Box className="hall-grid">
-        {displayedHalls.map((hall) => {
-          const occupancyPercentage = hall.isActive ? 100 : 0
-          return (
-            <Card className="hall-card hall-ui-card" key={hall.id}>
-              <CardContent className="hall-card-content">
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                  <Typography variant="h6">{hall.hallCode}</Typography>
-                  <Chip
-                    label={hall.isActive ? 'Active' : 'Inactive'}
-                    color={hall.isActive ? 'success' : 'error'}
-                    className={`status-chip ${hall.isActive ? 'status-chip-active' : 'status-chip-inactive'}`}
-                  />
-                </Stack>
+      <Box className="practical-lab-sections">
+        {groupedDisplayedHalls.map((section) => (
+          <Box key={section.title} className="practical-lab-section">
+            <Typography className="practical-lab-section-title">{section.title}</Typography>
+            <Box className="hall-grid">
+              {section.items.map((hall) => {
+                const occupancyPercentage = hall.isActive ? 100 : 0
+                return (
+                  <Card className="hall-card hall-ui-card" key={hall.id}>
+                    <CardContent className="hall-card-content">
+                      <Stack direction="row" justifyContent="space-between" alignItems="center">
+                        <Typography variant="h6">{hall.hallCode}</Typography>
+                        <Chip
+                          label={hall.isActive ? 'Active' : 'Inactive'}
+                          color={hall.isActive ? 'success' : 'error'}
+                          className={`status-chip ${hall.isActive ? 'status-chip-active' : 'status-chip-inactive'}`}
+                        />
+                      </Stack>
 
-                <Box className="hall-meta-grid">
-                  <Box className="hall-meta-row">
-                    <span className="hall-meta-chip">
-                      <span className="hall-meta-label">Rows</span>
-                      <span className="hall-meta-value">{hall.rows}</span>
-                    </span>
-                    <span className="hall-meta-chip">
-                      <span className="hall-meta-label">Cols</span>
-                      <span className="hall-meta-value">{hall.cols}</span>
-                    </span>
-                    <span className="hall-meta-chip">
-                      <span className="hall-meta-label">Students/Bench</span>
-                      <span className="hall-meta-value">{hall.studentsPerBench}</span>
-                    </span>
-                  </Box>
-                  <Box className="hall-meta-row">
-                    <span className="hall-meta-chip hall-meta-chip-wide">
-                      <span className="hall-meta-label">Exam Type</span>
-                      <span className="hall-meta-value">{getExamTypeLabel(hall.examType)}</span>
-                    </span>
-                  </Box>
-                  <Box className="hall-meta-row">
-                    <span className="hall-meta-chip">
-                      <span className="hall-meta-label">Capacity</span>
-                      <span className="hall-meta-value">{hall.capacity}</span>
-                    </span>
-                    <span className="hall-meta-chip">
-                      <span className="hall-meta-label">Supervisors</span>
-                      <span className="hall-meta-value">{hall.supervisors}</span>
-                    </span>
-                  </Box>
-                </Box>
+                      <Box className="hall-meta-grid">
+                        <Box className="hall-meta-row">
+                          <span className="hall-meta-chip">
+                            <span className="hall-meta-label">Rows</span>
+                            <span className="hall-meta-value">{hall.rows}</span>
+                          </span>
+                          <span className="hall-meta-chip">
+                            <span className="hall-meta-label">Cols</span>
+                            <span className="hall-meta-value">{hall.cols}</span>
+                          </span>
+                          <span className="hall-meta-chip">
+                            <span className="hall-meta-label">Students/Bench</span>
+                            <span className="hall-meta-value">{hall.studentsPerBench}</span>
+                          </span>
+                        </Box>
+                        <Box className="hall-meta-row">
+                          <span className="hall-meta-chip hall-meta-chip-wide">
+                            <span className="hall-meta-label">Exam Type</span>
+                            <span className="hall-meta-value">{getExamTypeLabel(hall.examType)}</span>
+                          </span>
+                        </Box>
+                        <Box className="hall-meta-row">
+                          <span className="hall-meta-chip">
+                            <span className="hall-meta-label">Capacity</span>
+                            <span className="hall-meta-value">{hall.capacity}</span>
+                          </span>
+                          <span className="hall-meta-chip">
+                            <span className="hall-meta-label">Supervisors</span>
+                            <span className="hall-meta-value">{hall.supervisors}</span>
+                          </span>
+                        </Box>
+                      </Box>
 
-                <Box sx={{ mt: 1.2 }}>
-                  <Typography variant="caption">Student Occupancy Strength</Typography>
-                  <LinearProgress
-                    variant="determinate"
-                    color={hall.isActive ? 'primary' : 'inherit'}
-                    value={occupancyPercentage}
-                    sx={{ height: 8, borderRadius: 4 }}
-                  />
-                </Box>
+                      <Box sx={{ mt: 1.2 }}>
+                        <Typography variant="caption">Student Occupancy Strength</Typography>
+                        <LinearProgress
+                          variant="determinate"
+                          color={hall.isActive ? 'primary' : 'inherit'}
+                          value={occupancyPercentage}
+                          sx={{ height: 8, borderRadius: 4 }}
+                        />
+                      </Box>
 
-                <Stack direction="row" alignItems="center" spacing={1} sx={{ mt: 1.4 }}>
-                  <Typography variant="body2" className="hall-meta-value status-text-inactive">
-                    Inactive
-                  </Typography>
-                  <Switch checked={hall.isActive} onChange={() => toggleHallStatus(hall)} size="small" />
-                  <Typography variant="body2" className="hall-meta-value status-text-active">
-                    Active
-                  </Typography>
-                </Stack>
+                      <Stack direction="row" alignItems="center" spacing={1} sx={{ mt: 1.4 }}>
+                        <Typography variant="body2" className="hall-meta-value status-text-inactive">
+                          Inactive
+                        </Typography>
+                        <Switch checked={hall.isActive} onChange={() => toggleHallStatus(hall)} size="small" />
+                        <Typography variant="body2" className="hall-meta-value status-text-active">
+                          Active
+                        </Typography>
+                      </Stack>
 
-                <Stack direction="row" spacing={1} className="hall-actions">
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    onClick={() => openEditDialog(hall)}
-                    sx={{
-                      color: '#7b1fa2',
-                      borderColor: '#7b1fa2',
-                      '&:hover': {
-                        borderColor: '#6a1b9a',
-                        backgroundColor: 'rgba(123, 31, 162, 0.04)'
-                      }
-                    }}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    onClick={() => deleteHall(hall.id)}
-                    sx={{
-                      color: '#d32f2f',
-                      borderColor: '#d32f2f',
-                      '&:hover': {
-                        borderColor: '#b71c1c',
-                        backgroundColor: 'rgba(211, 47, 47, 0.04)'
-                      }
-                    }}
-                  >
-                    Delete
-                  </Button>
-                </Stack>
-              </CardContent>
-            </Card>
-          )
-        })}
+                      <Stack direction="row" spacing={1} className="hall-actions">
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => openEditDialog(hall)}
+                          sx={{
+                            color: '#7b1fa2',
+                            borderColor: '#7b1fa2',
+                            '&:hover': {
+                              borderColor: '#6a1b9a',
+                              backgroundColor: 'rgba(123, 31, 162, 0.04)'
+                            }
+                          }}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => deleteHall(hall.id)}
+                          sx={{
+                            color: '#d32f2f',
+                            borderColor: '#d32f2f',
+                            '&:hover': {
+                              borderColor: '#b71c1c',
+                              backgroundColor: 'rgba(211, 47, 47, 0.04)'
+                            }
+                          }}
+                        >
+                          Delete
+                        </Button>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                )
+              })}
+            </Box>
+          </Box>
+        ))}
       </Box>
       )}
 
@@ -781,7 +814,7 @@ export default function Hall() {
                 label="Exam Type"
                 onChange={onFormFieldChange('examType')}
               >
-                {EXAM_TYPE_OPTIONS.map((item) => (
+                {HALL_EXAM_TYPE_OPTIONS.map((item) => (
                   <MenuItem key={item.value} value={item.value}>
                     {item.label}
                   </MenuItem>

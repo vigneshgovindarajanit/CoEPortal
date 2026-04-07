@@ -382,6 +382,7 @@ async function generateAllocation(payload) {
     yearFilter: input.yearFilter,
     primaryDept: input.primaryDept,
     secondaryDept: input.secondaryDept,
+    examType: input.examType,
     hallLayouts
   })
 
@@ -414,8 +415,8 @@ async function generateAllocation(payload) {
   }
 }
 
-async function getLatestAllocation() {
-  const allocation = await allocationRepository.findLatestAllocation()
+async function getLatestAllocation(filters = {}) {
+  const allocation = await allocationRepository.findLatestAllocation(filters.examType)
   if (!allocation) {
     return null
   }

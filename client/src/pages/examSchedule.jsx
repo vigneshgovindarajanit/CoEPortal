@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import {
   Alert,
   Box,
@@ -117,6 +119,43 @@ function normalizeExamDateValue(value) {
   return String(value || '').split('T')[0]
 }
 
+function formatDisplayDate(value) {
+  const normalized = normalizeExamDateValue(value)
+  if (!normalized) {
+    return '-'
+  }
+
+  const date = new Date(`${normalized}T00:00:00`)
+  if (Number.isNaN(date.getTime())) {
+    return normalized
+  }
+
+  return new Intl.DateTimeFormat('en-IN', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  }).format(date)
+}
+
+function formatPdfDate(value) {
+  const normalized = normalizeExamDateValue(value)
+  if (!normalized) {
+    return '-'
+  }
+
+  const date = new Date(`${normalized}T00:00:00`)
+  if (Number.isNaN(date.getTime())) {
+    return normalized
+  }
+
+  return new Intl.DateTimeFormat('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  }).format(date)
+}
+
 function getScheduleDateRange(scheduleItems = []) {
   const orderedDates = scheduleItems
     .map((item) => normalizeExamDateValue(item?.examDate))
@@ -126,6 +165,17 @@ function getScheduleDateRange(scheduleItems = []) {
   return {
     startDate: orderedDates[0] || '',
     endDate: orderedDates[orderedDates.length - 1] || ''
+  }
+}
+
+function getRequestedDateRange(criteria = {}, scheduleItems = []) {
+  const derivedRange = getScheduleDateRange(scheduleItems)
+  const requestedStartDate = normalizeExamDateValue(criteria?.startDate)
+  const requestedEndDate = normalizeExamDateValue(criteria?.endDate)
+
+  return {
+    startDate: requestedStartDate || derivedRange.startDate,
+    endDate: requestedEndDate || requestedStartDate || derivedRange.endDate || derivedRange.startDate
   }
 }
 
@@ -192,6 +242,7 @@ export default function ExamSchedulePage() {
   const [generatorPreview, setGeneratorPreview] = useState(null)
   const [courseDepartments, setCourseDepartments] = useState([])
   const [recentGeneratedSchedules, setRecentGeneratedSchedules] = useState([])
+  const [recentGeneratedCriteria, setRecentGeneratedCriteria] = useState(null)
 
   const manualSessionOptions = useMemo(
     () => getAllowedSessions(form.examType, filters.sessions),
@@ -210,8 +261,8 @@ export default function ExamSchedulePage() {
     [sortedRecentGeneratedSchedules]
   )
   const recentGeneratedDateRange = useMemo(
-    () => getScheduleDateRange(sortedRecentGeneratedSchedules),
-    [sortedRecentGeneratedSchedules]
+    () => getRequestedDateRange(recentGeneratedCriteria, sortedRecentGeneratedSchedules),
+    [recentGeneratedCriteria, sortedRecentGeneratedSchedules]
   )
 
   const totalScheduled = useMemo(() => schedules.length, [schedules])
@@ -244,6 +295,110 @@ export default function ExamSchedulePage() {
     ],
     [totalScheduled, examTypeFilter, departmentFilter]
   )
+
+  async function exportSchedulesPdf() {
+    if (!schedules.length) {
+      setError('No exam schedules available to export')
+      return
+    }
+
+    setError('')
+    setSuccess('')
+
+    const orderedSchedules = [...schedules].sort(compareSchedulesByDateAsc)
+    const groupedSchedules = groupSchedulesByDate(orderedSchedules)
+    const dateRange = getScheduleDateRange(orderedSchedules)
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4'
+    })
+
+    const title = 'EXAM SCHEDULE'
+    const subtitleParts = [
+      examTypeFilter ? `Type: ${formatExamTypeLabel(examTypeFilter)}` : 'Type: All',
+      departmentFilter ? `Department: ${departmentFilter}` : 'Department: All',
+      `Period: ${formatPdfDate(dateRange.startDate)} - ${formatPdfDate(dateRange.endDate)}`
+    ]
+
+    doc.setFillColor(111, 66, 193)
+    doc.rect(12, 10, 186, 18, 'F')
+    doc.setTextColor(255, 255, 255)
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(16)
+    doc.text(title, 105, 18, { align: 'center' })
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
+    doc.text(subtitleParts.join('   |   '), 105, 24, { align: 'center' })
+    doc.setTextColor(33, 37, 41)
+
+    let cursorY = 34
+
+    groupedSchedules.forEach((group, groupIndex) => {
+      if (cursorY > 260) {
+        doc.addPage()
+        cursorY = 18
+      }
+
+      doc.setFillColor(238, 231, 251)
+      doc.roundedRect(12, cursorY, 186, 10, 2, 2, 'F')
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(11)
+      doc.setTextColor(76, 29, 149)
+      doc.text(`Exam Date: ${formatDisplayDate(group.examDate)}`, 16, cursorY + 6.5)
+
+      autoTable(doc, {
+        startY: cursorY + 13,
+        head: [['S.No', 'Session', 'Exam Type', 'Course Code', 'Course Name', 'Dept', 'Year', 'Hall']],
+        body: group.items.map((item, index) => ([
+          String(index + 1),
+          item.sessionName || '-',
+          formatExamTypeLabel(item.examType),
+          item.courseCode || '-',
+          item.courseName || '-',
+          item.department || '-',
+          String(item.year || '-'),
+          item.hallCode || '-'
+        ])),
+        styles: {
+          font: 'helvetica',
+          fontSize: 8.2,
+          cellPadding: 2.4,
+          lineColor: [215, 220, 231],
+          lineWidth: 0.2,
+          textColor: [31, 45, 61]
+        },
+        headStyles: {
+          fillColor: [111, 66, 193],
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+          halign: 'center'
+        },
+        alternateRowStyles: {
+          fillColor: [247, 244, 252]
+        },
+        columnStyles: {
+          0: { halign: 'center', cellWidth: 12 },
+          1: { halign: 'center', cellWidth: 17 },
+          2: { halign: 'center', cellWidth: 26 },
+          3: { halign: 'center', cellWidth: 23 },
+          4: { cellWidth: 52 },
+          5: { halign: 'center', cellWidth: 16 },
+          6: { halign: 'center', cellWidth: 12 },
+          7: { halign: 'center', cellWidth: 18 }
+        },
+        margin: { left: 12, right: 12 },
+        theme: 'grid'
+      })
+
+      cursorY = (doc.lastAutoTable?.finalY || cursorY + 13) + (groupIndex === groupedSchedules.length - 1 ? 0 : 8)
+      doc.setTextColor(33, 37, 41)
+    })
+
+    const fileName = `exam-schedule-${dateRange.startDate || 'from'}-${dateRange.endDate || 'to'}.pdf`
+    doc.save(fileName)
+    setSuccess('Exam schedule PDF downloaded successfully')
+  }
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -401,6 +556,7 @@ export default function ExamSchedulePage() {
     try {
       const result = await deleteAllExamSchedules()
       setRecentGeneratedSchedules([])
+      setRecentGeneratedCriteria(null)
       await loadData()
       setSuccess(`Deleted ${result?.deletedCount || 0} exam schedules successfully`)
     } catch (err) {
@@ -434,6 +590,7 @@ export default function ExamSchedulePage() {
       setDepartmentFilter('')
       setSearch('')
       setRecentGeneratedSchedules(data?.created || [])
+      setRecentGeneratedCriteria(data?.criteria || null)
       await loadData()
       setGeneratorPreview(data)
       setSuccess(`Generated ${data?.created?.length || 0} exam schedules successfully`)
@@ -446,6 +603,16 @@ export default function ExamSchedulePage() {
     }
   }
 
+  const previewDateGroups = useMemo(
+    () => groupSchedulesByDate(generatorPreview?.schedules || []),
+    [generatorPreview]
+  )
+
+  const previewDateRange = useMemo(
+    () => getRequestedDateRange(generatorPreview?.criteria, generatorPreview?.schedules || []),
+    [generatorPreview]
+  )
+
   return (
     <Box className="app-shell">
       <Box className="page-head">
@@ -455,6 +622,9 @@ export default function ExamSchedulePage() {
         <Stack direction="row" spacing={1}>
           <Button variant="contained" color="error" onClick={removeAllSchedules}>
             Cancel All
+          </Button>
+          <Button variant="contained" color="secondary" onClick={exportSchedulesPdf} disabled={!schedules.length}>
+            Export PDF
           </Button>
           <Button variant="outlined" onClick={openGeneratorDialog}>
             Generate Exam Schedule
@@ -556,15 +726,36 @@ export default function ExamSchedulePage() {
         <Card className="course-table-card" sx={{ mb: 2 }}>
           <CardContent className="course-table-content">
             <Stack spacing={2}>
-              <Alert severity="info">
-                Start Exam Date: {recentGeneratedDateRange.startDate || '-'} | End Exam Date: {recentGeneratedDateRange.endDate || '-'}
-              </Alert>
+              <Box className="generated-schedule-summary">
+                <Box className="generated-schedule-summary-item">
+                  <Typography className="generated-schedule-summary-label">
+                    Start Date
+                  </Typography>
+                  <Typography className="generated-schedule-summary-value">
+                    {formatDisplayDate(recentGeneratedDateRange.startDate)}
+                  </Typography>
+                </Box>
+                <Box className="generated-schedule-summary-divider" />
+                <Box className="generated-schedule-summary-item">
+                  <Typography className="generated-schedule-summary-label">
+                    End Date
+                  </Typography>
+                  <Typography className="generated-schedule-summary-value">
+                    {formatDisplayDate(recentGeneratedDateRange.endDate)}
+                  </Typography>
+                </Box>
+              </Box>
 
               {recentGeneratedDateGroups.map((dateGroup) => (
-                <Box key={`generated-date-${dateGroup.examDate}`}>
-                  <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 700 }}>
-                    Exam Date: {dateGroup.examDate}
-                  </Typography>
+                <Box key={`generated-date-${dateGroup.examDate}`} className="generated-schedule-date-block">
+                  <Box className="generated-schedule-date-header">
+                    <Typography className="generated-schedule-date-label">
+                      Exam Date
+                    </Typography>
+                    <Typography className="generated-schedule-date-value">
+                      {formatDisplayDate(dateGroup.examDate)}
+                    </Typography>
+                  </Box>
                   <Table size="small" className="course-table">
                     <TableHead>
                       <TableRow>
@@ -574,6 +765,7 @@ export default function ExamSchedulePage() {
                         <TableCell className="course-head-cell">Course Name</TableCell>
                         <TableCell className="course-head-cell">Dept</TableCell>
                         <TableCell className="course-head-cell">Year</TableCell>
+                        <TableCell className="course-head-cell">Hall</TableCell>
                         <TableCell align="center" className="course-head-cell">Action</TableCell>
                       </TableRow>
                     </TableHead>
@@ -590,6 +782,7 @@ export default function ExamSchedulePage() {
                           <TableCell>{item.courseName}</TableCell>
                           <TableCell>{item.department}</TableCell>
                           <TableCell>{item.year}</TableCell>
+                          <TableCell>{item.hallCode || '-'}</TableCell>
                           <TableCell align="center">
                             <Stack direction="row" spacing={1} justifyContent="center">
                               <Button
@@ -647,6 +840,7 @@ export default function ExamSchedulePage() {
                 <TableCell className="course-head-cell">Course Name</TableCell>
                 <TableCell className="course-head-cell">Dept</TableCell>
                 <TableCell className="course-head-cell">Year</TableCell>
+                <TableCell className="course-head-cell">Hall</TableCell>
                 <TableCell align="center" className="course-head-cell">Action</TableCell>
               </TableRow>
             </TableHead>
@@ -664,6 +858,7 @@ export default function ExamSchedulePage() {
                   <TableCell>{item.courseName}</TableCell>
                   <TableCell>{item.department}</TableCell>
                   <TableCell>{item.year}</TableCell>
+                  <TableCell>{item.hallCode || '-'}</TableCell>
                   <TableCell align="center">
                     <Stack direction="row" spacing={1} justifyContent="center">
                       <Button
@@ -920,18 +1115,65 @@ export default function ExamSchedulePage() {
             {generatorPreview && (
               <Card variant="outlined">
                 <CardContent>
-                  <Stack spacing={1}>
+                  <Stack spacing={2}>
                     <Typography variant="subtitle2">
                       Generated {generatorPreview.totalCourses} schedule entries using {generatorPreview.totalHalls} active halls
                     </Typography>
-                    <TextField
-                      label="SQL Values Preview"
-                      value={generatorPreview.valuesSql || ''}
-                      multiline
-                      minRows={10}
-                      fullWidth
-                      InputProps={{ readOnly: true }}
-                    />
+                    <Box className="generated-schedule-summary">
+                      <Box className="generated-schedule-summary-item">
+                        <Typography className="generated-schedule-summary-label">Start Date</Typography>
+                        <Typography className="generated-schedule-summary-value">
+                          {formatDisplayDate(previewDateRange.startDate)}
+                        </Typography>
+                      </Box>
+                      <Box className="generated-schedule-summary-divider" />
+                      <Box className="generated-schedule-summary-item">
+                        <Typography className="generated-schedule-summary-label">End Date</Typography>
+                        <Typography className="generated-schedule-summary-value">
+                          {formatDisplayDate(previewDateRange.endDate)}
+                        </Typography>
+                      </Box>
+                    </Box>
+                    {previewDateGroups.map((dateGroup) => (
+                      <Box key={`preview-date-${dateGroup.examDate}`} className="generated-schedule-date-block">
+                        <Box className="generated-schedule-date-header">
+                          <Typography className="generated-schedule-date-label">Exam Date</Typography>
+                          <Typography className="generated-schedule-date-value">
+                            {formatDisplayDate(dateGroup.examDate)}
+                          </Typography>
+                        </Box>
+                        <Table size="small" className="course-table">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell className="course-head-cell">Session</TableCell>
+                              <TableCell className="course-head-cell course-col-type">Type</TableCell>
+                              <TableCell className="course-head-cell">Course Code</TableCell>
+                              <TableCell className="course-head-cell">Course Name</TableCell>
+                              <TableCell className="course-head-cell">Dept</TableCell>
+                              <TableCell className="course-head-cell">Year</TableCell>
+                              <TableCell className="course-head-cell">Hall</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {dateGroup.items.map((item, index) => (
+                              <TableRow key={`preview-${item.courseCode}-${item.hallCode}-${index}`} hover className="course-row">
+                                <TableCell>{item.sessionName}</TableCell>
+                                <TableCell className="course-col-type">
+                                  <Box component="span" className={`exam-pill ${getExamTypeClass(item.examType)}`}>
+                                    {formatExamTypeLabel(item.examType)}
+                                  </Box>
+                                </TableCell>
+                                <TableCell>{item.courseCode}</TableCell>
+                                <TableCell>{item.courseName}</TableCell>
+                                <TableCell>{item.department}</TableCell>
+                                <TableCell>{item.year}</TableCell>
+                                <TableCell>{item.hallCode || '-'}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </Box>
+                    ))}
                   </Stack>
                 </CardContent>
               </Card>

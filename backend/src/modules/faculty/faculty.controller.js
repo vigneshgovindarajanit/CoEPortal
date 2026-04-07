@@ -59,7 +59,7 @@ async function autoAssignSupervisor(req, res, next) {
 
 async function autoAssignAllSupervisors(req, res, next) {
   try {
-    const data = await facultyService.autoAssignAllSupervisors()
+    const data = await facultyService.autoAssignAllSupervisors(req.body)
     res.json(data)
   } catch (err) {
     next(err)
