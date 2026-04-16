@@ -1,5 +1,7 @@
-import AppRoutes from './routes'
 import { CssBaseline, ThemeProvider, createTheme } from '@mui/material'
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
+import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs'
+import AppRoutes from './routes/index.jsx'
 import { AuthProvider } from './hooks/useAuth'
 
 const appTheme = createTheme({
@@ -151,9 +153,6 @@ const appTheme = createTheme({
     }
   }
 })
-
-import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
-import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs'
 
 export default function App() {
   return (
