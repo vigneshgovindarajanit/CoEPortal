@@ -12,16 +12,16 @@ import AppLayout from '../layout/AppLayout.jsx'
 import AuthLayout from '../layout/AuthLayout.jsx'
 import { useAuth } from '../hooks/useAuth.js'
 
-const DashboardPage = lazy(() => import('../pages/Dashboard.jsx'))
-const HallPage = lazy(() => import('../pages/Hall.jsx'))
-const FacultyPage = lazy(() => import('../pages/Faculty.jsx'))
-const StudentsPage = lazy(() => import('../pages/Students.jsx'))
-const SeatingPage = lazy(() => import('../pages/Seating.jsx'))
-const ExamSchedulePage = lazy(() => import('../pages/ExamSchedule.jsx'))
-const CoursePage = lazy(() => import('../pages/Course.jsx'))
-const LoginPage = lazy(() => import('../pages/Login.jsx'))
-const LogoutPage = lazy(() => import('../pages/Logout.jsx'))
-const ErrorPage = lazy(() => import('../pages/Error.jsx'))
+const DashboardPage = lazy(() => import('../pages/dashboard.jsx'))
+const HallPage = lazy(() => import('../pages/hall.jsx'))
+const FacultyPage = lazy(() => import('../pages/faculty.jsx'))
+const StudentsPage = lazy(() => import('../pages/students.jsx'))
+const SeatingPage = lazy(() => import('../pages/seating.jsx'))
+const ExamSchedulePage = lazy(() => import('../pages/examSchedule.jsx'))
+const CoursePage = lazy(() => import('../pages/course.jsx'))
+const LoginPage = lazy(() => import('../pages/login.jsx'))
+const LogoutPage = lazy(() => import('../pages/logout.jsx'))
+const ErrorPage = lazy(() => import('../pages/error.jsx'))
 
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', icon: <DashboardRoundedIcon fontSize="small" /> },
