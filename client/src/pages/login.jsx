@@ -40,7 +40,12 @@ export default function LoginPage() {
       const redirectTo = location.state?.from?.pathname || '/dashboard'
       navigate(redirectTo, { replace: true })
     } catch (err) {
-      setError(err.response?.data?.message || 'Unable to sign in with those credentials')
+      setError(
+        err.response?.data?.message ||
+          err.response?.data?.error ||
+          err.message ||
+          'Unable to sign in with those credentials'
+      )
     } finally {
       setIsSubmitting(false)
     }

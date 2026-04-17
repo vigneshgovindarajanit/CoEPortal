@@ -266,7 +266,7 @@ export default function SeatingPage() {
     setError('')
     try {
       const [hallsRes, studentsSummaryRes, latestAllocationRes, examSchedulesRes, examScheduleFiltersRes] = await Promise.allSettled([
-        api.get('/halls'),
+        api.get('/api/halls'),
         fetchStudentsSummary(),
         fetchLatestAllocation({ examType: selectedExamType }),
         fetchExamSchedules({ examType: selectedExamType }),
@@ -519,7 +519,7 @@ export default function SeatingPage() {
       // Save filter context to DB
       const examDateValue = generateForm.examDate || null
       const sessionValue = generateForm.sessionName || null
-      await api.post('/seating-filters', {
+      await api.post('/api/seating-filters', {
         yearFilter: generateForm.years.includes('ALL') ? 'ALL' : generateForm.years.join(','),
         examType: selectedExamType,
         examDate: examDateValue,

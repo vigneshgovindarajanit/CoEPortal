@@ -330,8 +330,8 @@ export default function Hall() {
     setError('')
     try {
       const [hallsRes, statsRes] = await Promise.all([
-        api.get('/halls', { params: { search: currentSearch } }),
-        api.get('/halls/stats')
+        api.get('/api/halls', { params: { search: currentSearch } }),
+        api.get('/api/halls/stats')
       ])
       setHalls((hallsRes.data || []).map(normalizeHall))
       setStats(statsRes.data)
@@ -404,9 +404,9 @@ export default function Hall() {
         number: String(form.number).trim()
       }
       if (editingHall) {
-        await api.put(`/halls/${editingHall.id}`, payload)
+        await api.put(`/api/halls/${editingHall.id}`, payload)
       } else {
-        await api.post('/halls', payload)
+        await api.post('/api/halls', payload)
       }
 
       closeDialog()
@@ -421,7 +421,7 @@ export default function Hall() {
   async function toggleHallStatus(hall) {
     setError('')
     try {
-      await api.patch(`/halls/${hall.id}/status`, { isActive: !hall.isActive })
+      await api.patch(`/api/halls/${hall.id}/status`, { isActive: !hall.isActive })
       await fetchHalls(isPracticalView ? '' : search)
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to update hall status')
@@ -434,7 +434,7 @@ export default function Hall() {
     }
     setError('')
     try {
-      await api.delete(`/halls/${id}`)
+      await api.delete(`/api/halls/${id}`)
       await fetchHalls(isPracticalView ? '' : search)
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to delete hall')
