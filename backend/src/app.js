@@ -8,7 +8,7 @@ const { withMobileEnvelope } = require('./utils/response')
 
 const app = express()
 
-app.use(cors())
+app.use(cors(process.env.CORS_ORIGIN))
 app.use(express.json())
 app.use(morgan('dev'))
 app.use((req, res, next) => {
