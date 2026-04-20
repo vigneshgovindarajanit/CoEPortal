@@ -255,7 +255,7 @@ function getHallDepartmentLabelFromAllocationLayout(layout = {}) {
     }
   }
 
-  return departments.slice(0, 2).join(', ')
+  return departments.join(', ')
 }
 
 async function getAllocationDepartmentMapByExamType(examType) {

@@ -69,7 +69,8 @@ const EMPTY_GENERATOR_FORM = {
   department: '',
   sessionName: 'FN',
   examType: 'SEMESTER',
-  hallCode: ''
+  hallCode: '',
+  holidayDates: []
 }
 
 function getErrorMessage(err, fallback) {
@@ -240,6 +241,7 @@ export default function ExamSchedulePage() {
   const [generatorSaving, setGeneratorSaving] = useState(false)
   const [generatorForm, setGeneratorForm] = useState(EMPTY_GENERATOR_FORM)
   const [generatorPreview, setGeneratorPreview] = useState(null)
+  const [holidayDateInput, setHolidayDateInput] = useState('')
   const [courseDepartments, setCourseDepartments] = useState([])
   const [recentGeneratedSchedules, setRecentGeneratedSchedules] = useState([])
   const [recentGeneratedCriteria, setRecentGeneratedCriteria] = useState(null)
@@ -477,6 +479,7 @@ export default function ExamSchedulePage() {
   function closeGeneratorDialog() {
     setGeneratorDialogOpen(false)
     setGeneratorPreview(null)
+    setHolidayDateInput('')
     setGeneratorForm(EMPTY_GENERATOR_FORM)
   }
 
@@ -507,6 +510,28 @@ export default function ExamSchedulePage() {
           : {})
       }))
     }
+  }
+
+  function addHolidayDate() {
+    const normalizedDate = String(holidayDateInput || '').trim()
+    if (!normalizedDate) {
+      return
+    }
+
+    setGeneratorForm((prev) => ({
+      ...prev,
+      holidayDates: [...new Set([...(prev.holidayDates || []), normalizedDate])].sort((left, right) =>
+        left.localeCompare(right)
+      )
+    }))
+    setHolidayDateInput('')
+  }
+
+  function removeHolidayDate(dateToRemove) {
+    setGeneratorForm((prev) => ({
+      ...prev,
+      holidayDates: (prev.holidayDates || []).filter((value) => value !== dateToRemove)
+    }))
   }
 
   async function saveSchedule() {
@@ -595,6 +620,7 @@ export default function ExamSchedulePage() {
       setGeneratorPreview(data)
       setSuccess(`Generated ${data?.created?.length || 0} exam schedules successfully`)
       setGeneratorDialogOpen(false)
+      setHolidayDateInput('')
       setGeneratorForm(EMPTY_GENERATOR_FORM)
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to save generated exam schedules'))
@@ -1111,6 +1137,53 @@ export default function ExamSchedulePage() {
                 </Select>
               </FormControl>
             </Stack>
+
+            <Card variant="outlined">
+              <CardContent>
+                <Stack spacing={2}>
+                  <Typography variant="subtitle2">Holiday Dates</Typography>
+                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+                    <TextField
+                      type="date"
+                      label="Holiday Date"
+                      value={holidayDateInput}
+                      onChange={(event) => setHolidayDateInput(event.target.value)}
+                      InputLabelProps={{ shrink: true }}
+                      fullWidth
+                    />
+                    <Button variant="outlined" onClick={addHolidayDate} disabled={!holidayDateInput}>
+                      Add Holiday
+                    </Button>
+                  </Stack>
+                  {generatorForm.holidayDates?.length ? (
+                    <Stack spacing={1}>
+                      {generatorForm.holidayDates.map((holidayDate) => (
+                        <Stack
+                          key={holidayDate}
+                          direction="row"
+                          spacing={2}
+                          alignItems="center"
+                          justifyContent="space-between"
+                        >
+                          <Typography>{formatDisplayDate(holidayDate)}</Typography>
+                          <Button
+                            variant="text"
+                            color="error"
+                            onClick={() => removeHolidayDate(holidayDate)}
+                          >
+                            Remove
+                          </Button>
+                        </Stack>
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      Added holiday dates will be skipped while generating the exam schedule.
+                    </Typography>
+                  )}
+                </Stack>
+              </CardContent>
+            </Card>
 
             {generatorPreview && (
               <Card variant="outlined">

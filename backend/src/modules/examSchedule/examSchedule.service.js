@@ -11,6 +11,12 @@ const allocationRepository = require('../allocation/allocation.repository')
 const studentRepository = require('../student/student.repository')
 
 function normalizeGeneratorInput(payload = {}) {
+  const holidayDates = Array.isArray(payload.holidayDates)
+    ? payload.holidayDates
+    : Array.isArray(payload.holiday_dates)
+      ? payload.holiday_dates
+      : []
+
   return {
     startDate: String(payload.startDate || payload.examDate || '').trim(),
     endDate: String(payload.endDate || '').trim(),
@@ -27,7 +33,12 @@ function normalizeGeneratorInput(payload = {}) {
     hallCode: String(payload.hallCode || '')
       .trim()
       .toUpperCase()
-      .replace(/^ALL$/, '')
+      .replace(/^ALL$/, ''),
+    holidayDates: [...new Set(
+      holidayDates
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    )].sort((left, right) => left.localeCompare(right))
   }
 }
 
@@ -45,6 +56,13 @@ function validateGeneratorInput(payload = {}) {
 
   if (normalized.endDate && normalized.endDate < normalized.startDate) {
     errors.push('End date must be on or after start date')
+  }
+
+  for (const holidayDate of normalized.holidayDates) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(holidayDate)) {
+      errors.push('Holiday dates must be in YYYY-MM-DD format')
+      break
+    }
   }
 
   if (![...SESSION_NAMES, 'BOTH'].includes(normalized.sessionName)) {
@@ -145,14 +163,17 @@ function normalizeCourseGroupKey(course = {}) {
     .replace(/\s+/g, ' ')
 }
 
-function getDateRange(startDate, endDate) {
+function getDateRange(startDate, endDate, holidayDates = []) {
   const dates = []
   let index = 0
   const lastDate = endDate || startDate
+  const holidayDateSet = new Set(
+    holidayDates.map((value) => String(value || '').trim()).filter(Boolean)
+  )
 
   while (true) {
     const current = addDays(startDate, index)
-    if (!isSunday(current)) {
+    if (!isSunday(current) && !holidayDateSet.has(current)) {
       dates.push(current)
     }
     if (current >= lastDate) {
@@ -232,14 +253,14 @@ function canUseExamDateWithStudyLeave(usedDates = new Set(), examDate) {
 
   if (previousDate) {
     const gapFromPreviousExam = getDayDifference(previousDate, examDate)
-    if (gapFromPreviousExam < 2 || gapFromPreviousExam > 4) {
+    if (gapFromPreviousExam < 2) {
       return false
     }
   }
 
   if (nextDate) {
     const gapToNextExam = getDayDifference(examDate, nextDate)
-    if (gapToNextExam < 2 || gapToNextExam > 4) {
+    if (gapToNextExam < 2) {
       return false
     }
   }
@@ -290,7 +311,7 @@ function getHallDepartmentLabelFromLayout(layout = {}) {
   }
 
   if (directDepartments.length > 0) {
-    return directDepartments.slice(0, 2).join(', ')
+    return directDepartments.join(', ')
   }
 
   const derivedDepartments = []
@@ -309,7 +330,7 @@ function getHallDepartmentLabelFromLayout(layout = {}) {
   }
 
   if (derivedDepartments.length > 0) {
-    return derivedDepartments.slice(0, 2).join(', ')
+    return derivedDepartments.join(', ')
   }
 
   return 'MIXED'
@@ -460,10 +481,10 @@ async function buildGeneratedSchedules(payload = {}) {
 
   const allowedSessions = getAllowedSessionsForExamType(input.examType)
   const sessionSequence = input.sessionName === 'BOTH' ? allowedSessions : [input.sessionName]
-  const availableDates = getDateRange(input.startDate, input.endDate)
+  const availableDates = getDateRange(input.startDate, input.endDate, input.holidayDates)
 
   if (availableDates.length === 0) {
-    const err = new Error('No valid exam dates available in the selected range. Sundays are not allowed.')
+    const err = new Error('No valid exam dates available in the selected range. Sundays and selected holidays are not allowed.')
     err.status = 400
     throw err
   }
@@ -475,7 +496,8 @@ async function buildGeneratedSchedules(payload = {}) {
       halls: shuffleWithSeed(
         selectedHalls.map((hall) => ({
           hallCode: hall.hallCode,
-          capacity: Number(hall.capacity || 0)
+          capacity: Number(hall.capacity || 0),
+          departmentLabel: String(hall.departmentLabel || '').trim().toUpperCase()
         })),
         `${date}-${sessionName}-${input.examType}-${input.department}-${input.year}`
       )
@@ -586,7 +608,7 @@ async function buildGeneratedSchedules(payload = {}) {
       }
 
       const err = new Error(
-        `Unable to place ${courseGroup.representativeCourse?.courseCode || courseGroup.groupKey} with the required hall capacity and at least 1 full day gap between exams (up to 3 leave days). Available max hall capacity: ${maxCapacity}`
+        `Unable to place ${courseGroup.representativeCourse?.courseCode || courseGroup.groupKey} with the required hall capacity and at least 1 full day gap between exams. Available max hall capacity: ${maxCapacity}`
       )
       err.status = 409
       throw err

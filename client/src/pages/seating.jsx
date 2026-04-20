@@ -29,6 +29,7 @@ import {
   generateAllocation
 } from '../services/allocationService'
 import { fetchExamScheduleFilters, fetchExamSchedules } from '../services/examScheduleService'
+import { fetchLatestFacultyAssignments } from '../services/facultyService'
 import { fetchStudentsSummary } from '../services/studentService'
 
 const PRACTICAL_VENUE_RULES = [
@@ -243,6 +244,7 @@ export default function SeatingPage() {
   const [studentSummary, setStudentSummary] = useState({ total: 0, byYear: {} })
   const [allocation, setAllocation] = useState(null)
   const [examSchedules, setExamSchedules] = useState([])
+  const [facultyAssignments, setFacultyAssignments] = useState([])
   const [scheduleFilters, setScheduleFilters] = useState({ dates: [], sessions: [] })
   const [selectedYears, setSelectedYears] = useState(['3'])
   const [selectedExamType, setSelectedExamType] = useState('SEMESTER')
@@ -265,12 +267,13 @@ export default function SeatingPage() {
     setLoading(true)
     setError('')
     try {
-      const [hallsRes, studentsSummaryRes, latestAllocationRes, examSchedulesRes, examScheduleFiltersRes] = await Promise.allSettled([
+      const [hallsRes, studentsSummaryRes, latestAllocationRes, examSchedulesRes, examScheduleFiltersRes, facultyAssignmentsRes] = await Promise.allSettled([
         api.get('/api/halls'),
         fetchStudentsSummary(),
         fetchLatestAllocation({ examType: selectedExamType }),
         fetchExamSchedules({ examType: selectedExamType }),
-        fetchExamScheduleFilters({ examType: selectedExamType })
+        fetchExamScheduleFilters({ examType: selectedExamType }),
+        fetchLatestFacultyAssignments()
       ])
 
       if (hallsRes.status !== 'fulfilled') {
@@ -311,6 +314,12 @@ export default function SeatingPage() {
         })
       } else {
         setScheduleFilters({ dates: [], sessions: [], departments: [] })
+      }
+
+      if (facultyAssignmentsRes.status === 'fulfilled') {
+        setFacultyAssignments(facultyAssignmentsRes.value || [])
+      } else {
+        setFacultyAssignments([])
       }
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to load seating data'))
@@ -378,6 +387,63 @@ export default function SeatingPage() {
 
     return map
   }, [examSchedules, selectedDateFilter, selectedSessionFilter])
+
+  const latestScheduleByHall = useMemo(() => {
+    const map = new Map()
+
+    const matchedSchedules = (examSchedules || [])
+      .filter((item) => {
+        const matchesDate = !selectedDateFilter || normalizeDateValue(item.examDate) === selectedDateFilter
+        const matchesSession = !selectedSessionFilter || item.sessionName === selectedSessionFilter
+        return matchesDate && matchesSession
+      })
+      .sort((left, right) => {
+        const leftDate = normalizeDateValue(left.examDate)
+        const rightDate = normalizeDateValue(right.examDate)
+        if (leftDate !== rightDate) {
+          return rightDate.localeCompare(leftDate)
+        }
+        return String(left.sessionName || '').localeCompare(String(right.sessionName || ''))
+      })
+
+    for (const item of matchedSchedules) {
+      const hallCode = String(item?.hallCode || '').trim()
+      if (hallCode && !map.has(hallCode)) {
+        map.set(hallCode, item)
+      }
+    }
+
+    return map
+  }, [examSchedules, selectedDateFilter, selectedSessionFilter])
+
+  const facultyAssignmentsByHall = useMemo(() => {
+    const map = new Map()
+
+    const filteredAssignments = (facultyAssignments || []).filter((item) => {
+      const matchesExamType =
+        !item?.examDate ||
+        (latestScheduleByHall.has(String(item?.hallCode || '').trim()) &&
+          (!selectedDateFilter || normalizeDateValue(item.examDate) === selectedDateFilter) &&
+          (!selectedSessionFilter || String(item.sessionName || '').trim().toUpperCase() === selectedSessionFilter))
+
+      return matchesExamType
+    })
+
+    for (const item of filteredAssignments) {
+      const hallCode = String(item?.hallCode || '').trim()
+      if (!hallCode) {
+        continue
+      }
+
+      if (!map.has(hallCode)) {
+        map.set(hallCode, [])
+      }
+
+      map.get(hallCode).push(item)
+    }
+
+    return map
+  }, [facultyAssignments, latestScheduleByHall, selectedDateFilter, selectedSessionFilter])
 
   const filteredLayouts = useMemo(() => {
     const layouts = allocation?.hallLayouts || []
@@ -892,13 +958,10 @@ export default function SeatingPage() {
               const assignedCount = Number(layout.assignedCount || 0)
               const hallCodePrefix = String(layout.hall?.hallCode || '').toUpperCase().substring(0, 2)
               const isScrollableLayout = selectedExamType === 'PERIODIC_TEST' || hallCodePrefix === 'ME' || hallCodePrefix === 'SF'
-              const matchedSupervisor = supervisorsByHall.get(String(layout.hall?.hallCode || '').trim())
-              const matchedSchedule = (examSchedules || []).find((item) => {
-                const matchesHall = String(item?.hallCode || '').trim() === String(layout.hall?.hallCode || '').trim()
-                const matchesDate = !selectedDateFilter || normalizeDateValue(item.examDate) === selectedDateFilter
-                const matchesSession = !selectedSessionFilter || item.sessionName === selectedSessionFilter
-                return matchesHall && matchesDate && matchesSession
-              })
+              const hallCode = String(layout.hall?.hallCode || '').trim()
+              const matchedSupervisor = supervisorsByHall.get(hallCode)
+              const matchedSchedule = latestScheduleByHall.get(hallCode) || null
+              const matchedFacultyAssignments = facultyAssignmentsByHall.get(hallCode) || []
               
               return (
                 <Box key={`${layout.hall.id}-${layout.hallAllocationId || 'new'}`} className="seating-layout-card">
@@ -928,13 +991,22 @@ export default function SeatingPage() {
                           </Box>
                         </Box>
                       )}
-                      {(matchedSupervisor || layout.facultyAssignee || layout.facultyAssigneeTwo) && (
+                      {(matchedSupervisor || matchedFacultyAssignments.length > 0 || layout.facultyAssignee || layout.facultyAssigneeTwo) && (
                         <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                           {matchedSupervisor && (
                             <Box className="seating-layout-dept-chip" sx={{ background: 'rgba(33, 150, 243, 0.1)', color: '#1976d2', border: '1px solid rgba(25, 118, 210, 0.3)' }}>
                               Supervisor: {matchedSupervisor.supervisorName}
                             </Box>
                           )}
+                          {!matchedSupervisor && matchedFacultyAssignments.map((assignment, index) => (
+                            <Box
+                              key={`${hallCode}-faculty-${assignment.facultyId || assignment.facultyName || index}`}
+                              className="seating-layout-dept-chip"
+                              sx={{ background: 'rgba(33, 150, 243, 0.1)', color: '#1976d2', border: '1px solid rgba(25, 118, 210, 0.3)' }}
+                            >
+                              {index === 0 ? 'Supervisor' : `Supervisor ${index + 1}`}: {assignment.facultyName || 'Not assigned'}
+                            </Box>
+                          ))}
                           {!matchedSupervisor && layout.facultyAssignee && (
                             <Box className="seating-layout-dept-chip" sx={{ background: 'rgba(33, 150, 243, 0.1)', color: '#1976d2', border: '1px solid rgba(25, 118, 210, 0.3)' }}>
                               Supervisor: {layout.facultyAssignee.fullName}
